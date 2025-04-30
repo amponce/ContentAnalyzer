@@ -192,6 +192,8 @@ async function analyzeSentiment(text: string, chunkIndex?: number, totalChunks?:
     // Initialize API client if needed
     if (!apiClient) {
       apiClient = new APIClient(data.apiKey);
+      // Add a small delay after initialization to ensure proper setup
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     console.log('Analyzing text:', text.substring(0, 100) + (text.length > 100 ? '...' : ''));
@@ -210,54 +212,19 @@ async function analyzeSentiment(text: string, chunkIndex?: number, totalChunks?:
         messages: [
           {
             role: "system",
-            content: `You are a sophisticated sentiment analyzer for user feedback and reports. Your task is to analyze structured content, including surveys, reports, and user feedback.
+            content: `You are a sentiment analyzer specializing in social media content and user feedback. Analyze the sentiment of the given text and provide a clear, concise analysis.
 
-For each section and comment you identify, extract:
-1. The sentiment (positive, negative, or neutral)
-2. A confidence score (0-1)
-3. The key themes or topics mentioned
-4. Short summary of the main point
-5. Any specific issues or suggestions mentioned
-
-When analyzing structured documents:
-- Preserve the document's structure in your analysis
-- Analyze both individual comments and section-level sentiment
-- Consider the context of each section when analyzing comments within it
-- Look for patterns and trends across similar comments
-- Identify actionable feedback and recurring issues
-- Pay attention to quantitative data (ratings, scores) when present
-
-Your response should be a JSON object containing:
+Your response should be a simple JSON object containing:
 {
-  "overallSentiment": "positive|negative|neutral",
-  "overallConfidence": 0.XX,
-  "mainThemes": ["theme1", "theme2", "..."],
-  "sections": [
-    {
-      "title": "section name",
-      "sentiment": "positive|negative|neutral",
-      "confidence": 0.XX,
-      "themes": ["theme1", "theme2"],
-      "summary": "section summary"
-    }
-  ],
-  "commentAnalysis": [
-    {
-      "text": "extracted comment text",
-      "section": "parent section name",
-      "sentiment": "positive|negative|neutral",
-      "confidence": 0.XX,
-      "themes": ["theme1", "theme2"],
-      "summary": "brief summary of point",
-      "issues": ["specific issue1", "specific issue2"],
-      "suggestions": ["suggestion1", "suggestion2"]
-    }
-  ]
+  "sentiment": "positive" | "negative" | "neutral",
+  "confidence": number between 0 and 1,
+  "themes": ["main topic/theme"],
+  "summary": "brief summary of the content"
 }`
           },
           {
             role: "user",
-            content: `${data.instructions || "Please analyze the sentiment of this report, identifying individual comments and their sentiment."}\n\n${text}`
+            content: `${data.instructions || "Please analyze the sentiment of this text."}\n\n${text}`
           }
         ],
         response_format: { type: "json_object" }
@@ -281,91 +248,57 @@ Your response should be a JSON object containing:
     }
 
     // Parse the response and add the original text to ensure it's preserved
-    const sentimentData = JSON.parse(content);
+    let sentimentData;
+    try {
+      sentimentData = JSON.parse(content);
+      
+      // Validate required fields
+      if (!sentimentData.sentiment || typeof sentimentData.confidence !== 'number') {
+        throw new Error('Invalid response format from API');
+      }
+    } catch (error) {
+      console.error('Error parsing API response:', error);
+      // Provide default values if parsing fails
+      sentimentData = {
+        sentiment: 'neutral',
+        confidence: 0.5,
+        themes: ['General Discussion'],
+        summary: 'Social media post'
+      };
+    }
     
     // Create a markdown summary of the analysis
     let markdown = `# Sentiment Analysis Report\n\n`;
     
     // Overall sentiment with icon
-    const sentimentIcon = sentimentData.overallSentiment === 'positive' ? '✅' :
-                         sentimentData.overallSentiment === 'negative' ? '❌' : '📊';
-    markdown += `${sentimentIcon} **Overall: ${sentimentData.overallSentiment}** (${Math.round(sentimentData.overallConfidence * 100)}% confidence)\n\n`;
+    const sentimentIcon = sentimentData.sentiment === 'positive' ? '✅' :
+                         sentimentData.sentiment === 'negative' ? '❌' : '📊';
+    markdown += `${sentimentIcon} **Overall: ${sentimentData.sentiment}** (${Math.round(sentimentData.confidence * 100)}% confidence)\n\n`;
     
     if (chunkIndex !== undefined && totalChunks !== undefined) {
       markdown += `> Analyzing chunk ${chunkIndex + 1} of ${totalChunks}\n\n`;
     }
 
-    // Main themes in a bulleted list
-    if (sentimentData.mainThemes && sentimentData.mainThemes.length > 0) {
+    // Main themes
+    if (sentimentData.themes && sentimentData.themes.length > 0) {
       markdown += `## Key Themes\n\n`;
-      sentimentData.mainThemes.forEach((theme: string) => {
+      sentimentData.themes.forEach((theme: string) => {
         markdown += `• ${theme}\n`;
       });
       markdown += '\n';
     }
-    
-    // Section analysis in cards
-    if (sentimentData.sections && sentimentData.sections.length > 0) {
-      markdown += `## Section Analysis\n\n`;
-      sentimentData.sections.forEach((section: any) => {
-        const sectionIcon = section.sentiment === 'positive' ? '✅' :
-                          section.sentiment === 'negative' ? '❌' : '📊';
-        markdown += `### ${section.title}\n\n`;
-        markdown += `${sectionIcon} **Sentiment**: ${section.sentiment} (${Math.round(section.confidence * 100)}% confidence)\n\n`;
-        if (section.summary) {
-          markdown += `**Summary**: ${section.summary}\n\n`;
-        }
-        if (section.themes && section.themes.length > 0) {
-          markdown += `**Themes**: ${section.themes.join(', ')}\n\n`;
-        }
-        markdown += '---\n\n';
-      });
-    }
-    
-    // Individual comment analysis
-    if (sentimentData.commentAnalysis && sentimentData.commentAnalysis.length > 0) {
-      markdown += `## Comment Analysis\n\n`;
-      sentimentData.commentAnalysis.forEach((comment: any, index: number) => {
-        const commentIcon = comment.sentiment === 'positive' ? '✅' :
-                          comment.sentiment === 'negative' ? '❌' : '📊';
-        markdown += `### Comment ${index + 1}\n\n`;
-        markdown += `${commentIcon} **Sentiment**: ${comment.sentiment} (${Math.round(comment.confidence * 100)}% confidence)\n\n`;
-        
-        if (comment.section) {
-          markdown += `**Section**: ${comment.section}\n\n`;
-        }
-        
-        if (comment.themes && comment.themes.length > 0) {
-          markdown += `**Themes**: ${comment.themes.join(', ')}\n\n`;
-        }
-        
-        if (comment.summary) {
-          markdown += `**Summary**: ${comment.summary}\n\n`;
-        }
-        
-        if (comment.issues && comment.issues.length > 0) {
-          markdown += `**Issues Identified**:\n`;
-          comment.issues.forEach((issue: string) => {
-            markdown += `• ${issue}\n`;
-          });
-          markdown += '\n';
-        }
-        
-        if (comment.suggestions && comment.suggestions.length > 0) {
-          markdown += `**Suggestions**:\n`;
-          comment.suggestions.forEach((suggestion: string) => {
-            markdown += `• ${suggestion}\n`;
-          });
-          markdown += '\n';
-        }
-        
-        markdown += `**Text**:\n> ${comment.text}\n\n---\n\n`;
-      });
+
+    // Summary
+    if (sentimentData.summary) {
+      markdown += `## Summary\n\n${sentimentData.summary}\n\n`;
     }
 
+    // Original text
+    markdown += `## Original Text\n\n> ${text}\n`;
+
     return {
-      sentiment: sentimentData.overallSentiment,
-      confidence: sentimentData.overallConfidence,
+      sentiment: sentimentData.sentiment,
+      confidence: sentimentData.confidence,
       text: text,
       markdown: markdown,
       chunkIndex,
