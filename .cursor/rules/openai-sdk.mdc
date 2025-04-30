@@ -1,0 +1,137 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+---
+name: openai-sdk
+description: Guidance and best practices for using the OpenAI TypeScript & JavaScript SDK in this project.
+globs:
+  - "**/*.ts"
+  - "**/*.tsx"
+  - "**/*.js"
+  - "**/*.jsx"
+alwaysApply: false
+---
+
+# OpenAI SDK Usage Rule
+
+> Use this rule whenever you interact with the OpenAI REST API in TypeScript or JavaScript.
+
+## Installation
+- **Node / Bun**: `npm install openai`
+- **Deno (JSR)**: `deno add jsr:@openai/openai` or `npx jsr add @openai/openai`
+- **Browser** (opt‑in): set `dangerouslyAllowBrowser: true` when instantiating the client.
+
+## Import patterns
+```ts
+// Node / Bun / Cloudflare / Vercel Edge
+import OpenAI from 'openai';
+
+// Deno (JSR)
+import OpenAI from 'jsr:@openai/openai';
+```
+
+## Client instantiation
+```ts
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY, // may be omitted if env var is set
+  // maxRetries: 2 by default, timeout: 10 min default
+});
+```
+
+## Text generation
+### Preferred: **Responses API**
+```ts
+const { output_text } = await openai.responses.create({
+  model: 'gpt-4o',
+  instructions: 'You are a coding assistant that talks like a pirate',
+  input: 'Are semicolons optional in JavaScript?'
+});
+```
+### Legacy (supported): **Chat Completions API**
+```ts
+const completion = await openai.chat.completions.create({
+  model: 'gpt-4o',
+  messages: [
+    { role: 'developer', content: 'Talk like a pirate.' },
+    { role: 'user', content: 'Are semicolons optional in JavaScript?' }
+  ]
+});
+console.log(completion.choices[0].message.content);
+```
+
+## Streaming
+```ts
+const stream = await openai.responses.create({
+  model: 'gpt-4o',
+  input: 'Say "Sheep sleep deep" ten times fast!',
+  stream: true,
+});
+for await (const event of stream) process.stdout.write(event.delta ?? event);
+```
+
+## File uploads
+Use any of the following:
+- `fs.createReadStream()`
+- Web `File` instance
+- `fetch` `Response`
+- `toFile` helper
+```ts
+await openai.files.create({ file: fs.createReadStream('input.jsonl'), purpose: 'fine-tune' });
+```
+
+## Error handling
+Capture subclasses of `OpenAI.APIError`:
+| Status | Error Class |
+| ------ | ----------- |
+| 400 | BadRequestError |
+| 401 | AuthenticationError |
+| 403 | PermissionDeniedError |
+| 404 | NotFoundError |
+| 422 | UnprocessableEntityError |
+| 429 | RateLimitError |
+| >=500 | InternalServerError |
+| network/timeout | APIConnectionError |
+
+## Retries & Timeouts
+- **Retries**: 2 automatic (exponential back‑off); customize with `maxRetries`.
+- **Timeout**: 10 min default; customize with `timeout` (ms).
+
+## Request IDs
+Every response contains `_request_id`. Log this for debugging:
+```ts
+console.log(resp._request_id);
+```
+
+## Pagination
+Iterate across pages with `for await ... of` or manual `page.getNextPage()`.
+
+## Realtime API (beta)
+```ts
+import { OpenAIRealtimeWebSocket } from 'openai/beta/realtime/websocket';
+const rt = new OpenAIRealtimeWebSocket({ model: 'gpt-4o-realtime-preview-2024-12-17' });
+rt.on('response.text.delta', (e) => process.stdout.write(e.delta));
+```
+
+## Azure OpenAI
+```ts
+import { AzureOpenAI } from 'openai';
+import { getBearerTokenProvider, DefaultAzureCredential } from '@azure/identity';
+const credential = new DefaultAzureCredential();
+const azureADTokenProvider = getBearerTokenProvider(credential, 'https://cognitiveservices.azure.com/.default');
+const openai = new AzureOpenAI({ azureADTokenProvider, apiVersion: '2024-10-01-preview' });
+```
+
+## Advanced tricks
+- Access raw `Response` via `.asResponse()` or `.withResponse()`.
+- Use `client.get/post/...` for undocumented endpoints.
+- Force web fetch in Node with `import 'openai/shims/web'`; bring polyfills with `import 'openai/shims/node'`.
+- Configure proxies via the `httpAgent` option.
+
+## Runtime requirements
+- TypeScript ≥4.5
+- Node 18+, Deno v1.28+, Bun 1.0+, Cloudflare Workers, Vercel Edge Runtime, Nitro v2.6+, Jest 28+ (node env)
+
+@openai-example.ts
+

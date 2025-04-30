@@ -1,0 +1,84 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# AI Model Usage Rule
+
+---
+description: Enforces consistent AI model usage across the codebase
+globs: ["**/*.ts", "**/*.tsx"]
+alwaysApply: true
+---
+
+## Model Selection Guidelines
+
+### Vision and OCR Tasks
+- Primary: `gpt-4o-audio-preview`
+- Fallback: `gpt-4.1`
+
+### Text Analysis and Processing
+- Primary: `o4-mini` (for faster, cost-effective processing)
+- Fallback: `o3` (when higher accuracy needed)
+
+### Form Field Extraction
+- Primary: `gpt-4o` 
+- Fallback: `gpt-4.1`
+
+### Text Generation and Summaries
+- Primary: `o4-mini`
+- Fallback: `o3`
+
+## Current Model Usage in Codebase
+
+### VA Form Processor
+```typescript
+// src/lib/va-forms/form-processor.ts
+private model: string = 'gpt-4o-audio-preview'; // For OCR and vision tasks
+```
+
+### Sentiment Analysis
+```typescript
+// Use o4-mini for sentiment analysis
+model: "o4-mini"
+```
+
+## Model Selection Criteria
+
+1. Vision/OCR Tasks:
+   - Use `gpt-4o-audio-preview` for best accuracy in form field detection
+   - Fallback to `gpt-4.1` if audio preview not needed
+
+2. Text Processing:
+   - Use `o4-mini` for standard processing (faster, cost-effective)
+   - Use `o3` when highest accuracy needed
+
+3. Form Processing:
+   - Use `gpt-4o` for general form understanding
+   - Use `gpt-4.1` for complex form logic
+
+4. Real-time Features:
+   - Use `gpt-4o-realtime-preview` for streaming responses
+   - Use `gpt-4o-mini-realtime-preview` for cost-effective streaming
+
+## Implementation Notes
+
+1. Always specify model versions explicitly
+2. Use constants for model names to ensure consistency
+3. Document any model changes in commit messages
+4. Test performance impact when changing models
+
+## Model Constants
+
+```typescript
+export const AI_MODELS = {
+  VISION: 'gpt-4o-audio-preview',
+  VISION_FALLBACK: 'gpt-4.1',
+  TEXT_PROCESSING: 'o4-mini',
+  TEXT_PROCESSING_HIGH_ACCURACY: 'o3',
+  FORM_PROCESSING: 'gpt-4o',
+  FORM_PROCESSING_FALLBACK: 'gpt-4.1',
+  REALTIME: 'gpt-4o-realtime-preview',
+  REALTIME_COST_EFFECTIVE: 'gpt-4o-mini-realtime-preview'
+};
+```
