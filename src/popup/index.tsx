@@ -19,7 +19,7 @@ import ReactMarkdown from 'react-markdown';
 import '@/styles/globals.css';
 
 // Import logo
-import logo from '../../icons/icon.svg';
+import logo from '../../icons/agilesix_logo.jpg';
 
 interface AnalysisResult {
   sentiment: string;
