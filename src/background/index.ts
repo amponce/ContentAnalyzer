@@ -8,6 +8,7 @@ interface SentimentResponse {
   confidence: number;
   error?: string;
   text?: string;
+  markdown?: string;
 }
 
 // Track content script connections
@@ -185,12 +186,7 @@ async function analyzeSentiment(text: string): Promise<SentimentResponse> {
       apiClient = new APIClient(data.apiKey);
     }
 
-    // Format the text as a survey response if it's not already formatted
-    const formattedText = text.includes('Survey Response ID:') 
-      ? text 
-      : `Survey Response ID: 1\nFeedback: ${text}`;
-
-    console.log('Analyzing text:', formattedText.substring(0, 100) + (formattedText.length > 100 ? '...' : ''));
+    console.log('Analyzing text:', text.substring(0, 100) + (text.length > 100 ? '...' : ''));
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -203,11 +199,45 @@ async function analyzeSentiment(text: string): Promise<SentimentResponse> {
         messages: [
           {
             role: "system",
-            content: "You are a sentiment analyzer. Analyze the sentiment of the given text and respond with a JSON object containing 'sentiment' (positive, negative, or neutral) and 'confidence' (a number between 0 and 1)."
+            content: `You are a sophisticated sentiment analyzer for user feedback and reports. 
+            
+For each comment or feedback item you identify, extract:
+1. The sentiment (positive, negative, or neutral)
+2. A confidence score (0-1)
+3. The key themes or topics mentioned
+4. Short summary of the main point
+
+When analyzing reports or documents with multiple comments:
+- Identify and analyze individual comments separately
+- Treat survey responses, feedback items, and distinct paragraphs as separate entries
+- For each entry, provide both the extracted text and your analysis
+
+Your response should be a JSON object containing:
+- An overall sentiment assessment for the entire document
+- A confidence score for the overall assessment
+- A list of individual comments with their sentiment analysis
+- The main themes across all comments
+
+Return ONLY valid JSON with this structure:
+{
+  "overallSentiment": "positive|negative|neutral",
+  "overallConfidence": 0.XX,
+  "mainThemes": ["theme1", "theme2", "..."],
+  "commentAnalysis": [
+    {
+      "text": "extracted comment text",
+      "sentiment": "positive|negative|neutral",
+      "confidence": 0.XX,
+      "themes": ["theme1", "theme2"],
+      "summary": "brief summary of point"
+    },
+    ...
+  ]
+}`
           },
           {
             role: "user",
-            content: `${data.instructions || "Please analyze the sentiment of this text."}\n\n${formattedText}`
+            content: `${data.instructions || "Please analyze the sentiment of this report, identifying individual comments and their sentiment."}\n\n${text}`
           }
         ],
         response_format: { type: "json_object" }
@@ -231,10 +261,43 @@ async function analyzeSentiment(text: string): Promise<SentimentResponse> {
     }
 
     // Parse the response and add the original text to ensure it's preserved
-    const sentimentData = JSON.parse(content) as SentimentResponse;
+    const sentimentData = JSON.parse(content);
+    
+    // Create a markdown summary of the analysis
+    let markdown = `# Sentiment Analysis\n\n`;
+    markdown += `## Overall Sentiment: ${sentimentData.overallSentiment} (${Math.round(sentimentData.overallConfidence * 100)}% confidence)\n\n`;
+    
+    if (sentimentData.mainThemes && sentimentData.mainThemes.length > 0) {
+      markdown += `## Main Themes\n\n`;
+      sentimentData.mainThemes.forEach((theme: string) => {
+        markdown += `- ${theme}\n`;
+      });
+      markdown += `\n`;
+    }
+    
+    if (sentimentData.commentAnalysis && sentimentData.commentAnalysis.length > 0) {
+      markdown += `## Individual Comments\n\n`;
+      sentimentData.commentAnalysis.forEach((comment: any, index: number) => {
+        markdown += `### Comment ${index + 1}\n\n`;
+        markdown += `**Sentiment**: ${comment.sentiment} (${Math.round(comment.confidence * 100)}% confidence)\n\n`;
+        
+        if (comment.themes && comment.themes.length > 0) {
+          markdown += `**Themes**: ${comment.themes.join(', ')}\n\n`;
+        }
+        
+        if (comment.summary) {
+          markdown += `**Summary**: ${comment.summary}\n\n`;
+        }
+        
+        markdown += `**Text**:\n\n${comment.text}\n\n---\n\n`;
+      });
+    }
+
     return {
-      ...sentimentData,
-      text: text // Ensure the original full text is included
+      sentiment: sentimentData.overallSentiment,
+      confidence: sentimentData.overallConfidence,
+      text: text,
+      markdown: markdown
     };
 
   } catch (error) {

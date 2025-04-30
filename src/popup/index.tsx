@@ -12,8 +12,6 @@ import {
   Clipboard,
   Globe,
   Download,
-  ChevronRight,
-  ChevronLeft,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
@@ -66,7 +64,6 @@ function Popup() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<AnalysisResult[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [currentChunk, setCurrentChunk] = useState(0);
   const portRef = useRef<chrome.runtime.Port | null>(null);
 
   useEffect(() => {
@@ -240,22 +237,69 @@ function Popup() {
   const handleExportCSV = () => {
     if (results.length === 0) return;
 
-    const csvContent = [
-      'Survey Response ID,Sentiment,Confidence,Text',
-      ...results.map((result, index) => 
-        `${index + 1},${result.sentiment},${Math.round(result.confidence * 100)}%,"${result.text.replace(/"/g, '""')}"`
-      )
-    ].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', 'sentiment-analysis.csv');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    try {
+      console.log('Preparing CSV export...');
+      let csvContent = [];
+      
+      // Check if we have comment analysis data
+      const hasCommentAnalysis = results.some(result => 
+        result.markdown && result.markdown.includes('Individual Comments')
+      );
+      
+      if (hasCommentAnalysis) {
+        // Export in detailed format with individual comments
+        csvContent.push('Comment,Sentiment,Confidence,Themes,Summary');
+        
+        results.forEach(result => {
+          // Try to parse the detailed data from markdown if available
+          try {
+            // Simple parsing logic to extract comments from markdown
+            const commentRegex = /### Comment \d+\s+\*\*Sentiment\*\*: (\w+) \((\d+)% confidence\)\s+(?:\*\*Themes\*\*: (.*?)\s+)?(?:\*\*Summary\*\*: (.*?)\s+)?\*\*Text\*\*:\s+([\s\S]+?)(?=---|\n### Comment|\Z)/g;
+            let match;
+            
+            if (result.markdown) {
+              while ((match = commentRegex.exec(result.markdown)) !== null) {
+                const sentiment = match[1] || '';
+                const confidence = match[2] || '';
+                const themes = match[3] || '';
+                const summary = match[4] || '';
+                const text = (match[5] || '').trim().replace(/"/g, '""');
+                
+                csvContent.push(`"${text}","${sentiment}","${confidence}%","${themes}","${summary}"`);
+              }
+            } else {
+              // Fallback if markdown parsing fails
+              csvContent.push(`"${result.text.replace(/"/g, '""')}","${result.sentiment}","${Math.round(result.confidence * 100)}%","",""`)
+            }
+          } catch (err) {
+            console.error('Error parsing markdown for CSV:', err);
+            // Fallback to simple format
+            csvContent.push(`"${result.text.replace(/"/g, '""')}","${result.sentiment}","${Math.round(result.confidence * 100)}%","",""`)
+          }
+        });
+      } else {
+        // Simple format for backward compatibility
+        csvContent.push('Response ID,Sentiment,Confidence,Text');
+        results.forEach((result, index) => 
+          csvContent.push(`${index + 1},"${result.sentiment}","${Math.round(result.confidence * 100)}%","${result.text.replace(/"/g, '""')}"`)
+        );
+      }
+      
+      const blob = new Blob([csvContent.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', 'sentiment-analysis.csv');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      console.log('CSV export completed');
+    } catch (err) {
+      console.error('Failed to export CSV:', err);
+      setError('Failed to export CSV: ' + (err instanceof Error ? err.message : String(err)));
+    }
   };
 
   const handleExportMarkdown = () => {
@@ -357,51 +401,45 @@ function Popup() {
     }
 
     return (
-      <div className="space-y-3">
+      <div className="space-y-4">
         {results.map((result, index) => (
-          <div key={index} className="p-3 bg-gray-50 rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <span className={`text-sm font-medium ${
-                result.sentiment === 'positive' ? 'text-green-600' :
-                result.sentiment === 'negative' ? 'text-red-600' :
-                'text-gray-600'
-              }`}>
-                {result.sentiment.charAt(0).toUpperCase() + result.sentiment.slice(1)}
-              </span>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-500">
-                  {Math.round(result.confidence * 100)}% confidence
+          <div key={index} className="rounded-lg border border-gray-200 overflow-hidden">
+            {/* Header with sentiment info */}
+            <div className={`p-3 flex items-center justify-between ${
+              result.sentiment === 'positive' ? 'bg-green-50 border-b border-green-100' :
+              result.sentiment === 'negative' ? 'bg-red-50 border-b border-red-100' :
+              'bg-gray-50 border-b border-gray-100'
+            }`}>
+              <div className="flex items-center">
+                <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full mr-2 ${
+                  result.sentiment === 'positive' ? 'bg-green-100 text-green-600' :
+                  result.sentiment === 'negative' ? 'bg-red-100 text-red-600' :
+                  'bg-gray-100 text-gray-600'
+                }`}>
+                  {result.sentiment === 'positive' ? '✓' : 
+                   result.sentiment === 'negative' ? '✗' : '•'}
                 </span>
-                {result.totalChunks && result.totalChunks > 1 && (
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => setCurrentChunk(prev => Math.max(0, prev - 1))}
-                      disabled={currentChunk === 0}
-                      className="p-1 hover:bg-gray-200 rounded disabled:opacity-50"
-                    >
-                      <ChevronLeft className="h-4 w-4" />
-                    </button>
-                    <span className="text-xs text-gray-500">
-                      {currentChunk + 1} / {result.totalChunks}
-                    </span>
-                    <button
-                      onClick={() => setCurrentChunk(prev => Math.min(result.totalChunks! - 1, prev + 1))}
-                      disabled={currentChunk === result.totalChunks - 1}
-                      className="p-1 hover:bg-gray-200 rounded disabled:opacity-50"
-                    >
-                      <ChevronRight className="h-4 w-4" />
-                    </button>
-                  </div>
-                )}
+                <span className="font-medium capitalize">
+                  {result.sentiment}
+                </span>
+              </div>
+              <div className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">
+                {Math.round(result.confidence * 100)}% confidence
               </div>
             </div>
-            <div className="text-sm text-gray-700 prose prose-sm max-w-none overflow-auto max-h-96">
+            
+            {/* Content */}
+            <div className="p-3">
               {result.markdown ? (
-                <ReactMarkdown>
-                  {result.markdown}
-                </ReactMarkdown>
+                <div className="prose prose-sm max-w-none overflow-auto max-h-[60vh]">
+                  <ReactMarkdown>
+                    {result.markdown}
+                  </ReactMarkdown>
+                </div>
               ) : (
-                <div className="whitespace-pre-wrap">{result.text}</div>
+                <div className="whitespace-pre-wrap text-sm text-gray-700 max-h-[60vh] overflow-auto">
+                  {result.text}
+                </div>
               )}
             </div>
           </div>
