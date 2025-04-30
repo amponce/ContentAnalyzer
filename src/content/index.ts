@@ -45,36 +45,55 @@ function formatAsMarkdown(text: string, source: 'twitter' | 'github' | 'selectio
 }
 
 // Function to split content into manageable chunks
-function splitContentIntoChunks(text: string, maxLength: number = 4000): string[] {
+function splitContentIntoChunks(text: string, maxLength: number = 2000): string[] {
   const chunks: string[] = [];
   let currentChunk = '';
 
-  // Split by natural breaks first (paragraphs, tweets, responses)
-  const sections = text.split(/(?:\n\n|\r\n\r\n|---\n)/);
+  // First try to split by major sections (headers)
+  const sections = text.split(/(?=# |\n## |\n### )/);
 
   for (const section of sections) {
+    // If this section would make the current chunk too long
     if (currentChunk.length + section.length > maxLength) {
       if (currentChunk) {
         chunks.push(currentChunk.trim());
         currentChunk = '';
       }
       
-      // If a single section is longer than maxLength, split by sentences
+      // If the section itself is too long, split it further
       if (section.length > maxLength) {
-        const sentences = section.match(/[^.!?]+[.!?]+/g) || [];
-        for (const sentence of sentences) {
-          if (currentChunk.length + sentence.length > maxLength) {
+        // Split by paragraphs first
+        const paragraphs = section.split(/\n\n|\r\n\r\n/);
+        for (const paragraph of paragraphs) {
+          if (paragraph.length > maxLength) {
+            // If paragraph is still too long, split by sentences
+            const sentences = paragraph.match(/[^.!?]+[.!?]+/g) || [];
+            for (const sentence of sentences) {
+              if (currentChunk.length + sentence.length > maxLength) {
+                chunks.push(currentChunk.trim());
+                currentChunk = sentence;
+              } else {
+                currentChunk += (currentChunk ? ' ' : '') + sentence;
+              }
+            }
+          } else if (currentChunk.length + paragraph.length > maxLength) {
             chunks.push(currentChunk.trim());
-            currentChunk = sentence;
+            currentChunk = paragraph;
           } else {
-            currentChunk += (currentChunk ? ' ' : '') + sentence;
+            currentChunk += (currentChunk ? '\n\n' : '') + paragraph;
           }
         }
       } else {
         currentChunk = section;
       }
     } else {
-      currentChunk += (currentChunk ? '\n\n' : '') + section;
+      currentChunk += (currentChunk ? '\n' : '') + section;
+    }
+
+    // If we have a substantial chunk, add it to chunks
+    if (currentChunk.length >= maxLength * 0.75) {
+      chunks.push(currentChunk.trim());
+      currentChunk = '';
     }
   }
 
@@ -128,12 +147,57 @@ function getTwitterContent(): string | null {
 
 // Function to get Medallia survey data
 function getMedalliaSurveyData(): string | null {
-  const surveyResponses: Array<{ id: number; text: string }> = [];
+  const surveyResponses: Array<{ id: number; text: string; section?: string }> = [];
+  let currentSection = '';
   
-  // Try to find survey response containers
-  const responseElements = document.querySelectorAll('.survey-response, .feedback-item, [data-survey-response], .markdown-body');
-  
-  if (responseElements.length > 0) {
+  // Try to find survey response containers and sections
+  const content = document.querySelector('.markdown-body, .content, article');
+  if (!content) return null;
+
+  // First pass: collect all headers and their content
+  const walker = document.createTreeWalker(
+    content,
+    NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+    {
+      acceptNode: (node) => {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const element = node as Element;
+          if (element.tagName.match(/^H[1-6]$/)) {
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        } else if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
+          return NodeFilter.FILTER_ACCEPT;
+        }
+        return NodeFilter.FILTER_SKIP;
+      }
+    }
+  );
+
+  let node = walker.nextNode();
+  let responseId = 1;
+
+  while (node) {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const element = node as Element;
+      if (element.tagName.match(/^H[1-6]$/)) {
+        currentSection = element.textContent?.trim() || '';
+      }
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent?.trim();
+      if (text && text.length > 10) { // Ignore very short text nodes
+        surveyResponses.push({
+          id: responseId++,
+          text: text,
+          section: currentSection
+        });
+      }
+    }
+    node = walker.nextNode();
+  }
+
+  // If no responses found through tree walking, try traditional selectors
+  if (surveyResponses.length === 0) {
+    const responseElements = document.querySelectorAll('.survey-response, .feedback-item, [data-survey-response], blockquote');
     responseElements.forEach((element, index) => {
       const feedbackText = element.textContent?.trim();
       if (feedbackText) {
@@ -143,20 +207,18 @@ function getMedalliaSurveyData(): string | null {
         });
       }
     });
-  }
-  
-  // If no specific elements found, try to find feedback in tables or lists
-  if (surveyResponses.length === 0) {
+
+    // Also look for feedback in tables
     const tables = document.querySelectorAll('table');
     tables.forEach(table => {
       const rows = table.querySelectorAll('tr');
-      rows.forEach((row, index) => {
+      rows.forEach(row => {
         const cells = row.querySelectorAll('td');
-        if (cells.length >= 2) { // Assuming feedback is in the second column
+        if (cells.length >= 2) {
           const feedbackText = cells[1].textContent?.trim();
           if (feedbackText) {
             surveyResponses.push({
-              id: index + 1,
+              id: responseId++,
               text: feedbackText
             });
           }
@@ -167,12 +229,19 @@ function getMedalliaSurveyData(): string | null {
   
   if (surveyResponses.length === 0) return null;
   
-  // Format the responses
-  const formattedContent = surveyResponses
-    .map(response => `Survey Response ID: ${response.id}\nFeedback: ${response.text}`)
-    .join('\n\n');
+  // Format the responses, preserving section structure
+  let formattedContent = '';
+  let currentFormattedSection = '';
 
-  return formatAsMarkdown(formattedContent, 'github');
+  surveyResponses.forEach(response => {
+    if (response.section && response.section !== currentFormattedSection) {
+      currentFormattedSection = response.section;
+      formattedContent += `\n# ${currentFormattedSection}\n\n`;
+    }
+    formattedContent += `Survey Response ID: ${response.id}\nFeedback: ${response.text}\n\n---\n\n`;
+  });
+
+  return formatAsMarkdown(formattedContent.trim(), 'github');
 }
 
 // Function to get page content

@@ -18,6 +18,9 @@ import ReactMarkdown from 'react-markdown';
 // Import global styles
 import '@/styles/globals.css';
 
+// Import logo
+import logo from '../../icons/icon.svg';
+
 interface AnalysisResult {
   sentiment: string;
   confidence: number;
@@ -193,12 +196,19 @@ function Popup() {
         throw new Error('No content found to analyze');
       }
 
-      console.log('Sending text for sentiment analysis...');
-      // Send first chunk through port
-      sendMessage({
-        action: "analyzeSentiment",
-        text: response.chunks[0].text
-      });
+      console.log('Sending all chunks for sentiment analysis...');
+      // Process all chunks sequentially
+      for (const chunk of response.chunks) {
+        // Send chunk through port
+        sendMessage({
+          action: "analyzeSentiment",
+          text: chunk.text,
+          chunkIndex: chunk.index,
+          totalChunks: response.chunks.length
+        });
+        // Add a small delay between chunks to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     } catch (err) {
       console.error('Failed to analyze page:', err);
       setError(err instanceof Error ? err.message : 'Failed to analyze page');
@@ -369,6 +379,36 @@ function Popup() {
             <div className="border-t pt-4">
               <div className="text-sm font-medium mb-2">Analysis Results</div>
               {renderResults()}
+              {(results.length > 0 || error) && (
+                <div className="flex items-center justify-end gap-2 mt-4 pt-4 border-t">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearResults}
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    Clear
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleExportCSV}
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Export CSV
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleExportMarkdown}
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Export Markdown
+                  </Button>
+                </div>
+              )}
             </div>
           </>
         );
@@ -377,9 +417,19 @@ function Popup() {
 
   const renderResults = () => {
     if (loading) {
+      const lastResult = results[results.length - 1];
+      const showProgress = lastResult?.chunkIndex !== undefined && lastResult?.totalChunks !== undefined;
+      
       return (
-        <div className="text-sm text-gray-500 animate-pulse">
-          Analyzing content...
+        <div className="text-sm text-gray-500">
+          <div className="animate-pulse mb-2">
+            Analyzing content...
+          </div>
+          {showProgress && lastResult.chunkIndex !== undefined && lastResult.totalChunks !== undefined && (
+            <div className="text-xs">
+              Processing chunk {lastResult.chunkIndex + 1} of {lastResult.totalChunks}
+            </div>
+          )}
         </div>
       );
     }
@@ -403,43 +453,61 @@ function Popup() {
     return (
       <div className="space-y-4">
         {results.map((result, index) => (
-          <div key={index} className="rounded-lg border border-gray-200 overflow-hidden">
+          <div key={index} className="rounded-lg border bg-card text-card-foreground shadow-sm">
             {/* Header with sentiment info */}
-            <div className={`p-3 flex items-center justify-between ${
-              result.sentiment === 'positive' ? 'bg-green-50 border-b border-green-100' :
-              result.sentiment === 'negative' ? 'bg-red-50 border-b border-red-100' :
-              'bg-gray-50 border-b border-gray-100'
+            <div className={`p-4 flex items-center justify-between rounded-t-lg ${
+              result.sentiment === 'positive' ? 'bg-green-50 dark:bg-green-900/20' :
+              result.sentiment === 'negative' ? 'bg-red-50 dark:bg-red-900/20' :
+              'bg-gray-50 dark:bg-gray-900/20'
             }`}>
-              <div className="flex items-center">
-                <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full mr-2 ${
-                  result.sentiment === 'positive' ? 'bg-green-100 text-green-600' :
-                  result.sentiment === 'negative' ? 'bg-red-100 text-red-600' :
-                  'bg-gray-100 text-gray-600'
+              <div className="flex items-center gap-3">
+                <span className={`inline-flex items-center justify-center w-10 h-10 rounded-full ${
+                  result.sentiment === 'positive' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' :
+                  result.sentiment === 'negative' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' :
+                  'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300'
                 }`}>
                   {result.sentiment === 'positive' ? '✓' : 
                    result.sentiment === 'negative' ? '✗' : '•'}
                 </span>
-                <span className="font-medium capitalize">
-                  {result.sentiment}
-                </span>
+                <div className="flex flex-col">
+                  <span className="text-lg font-semibold capitalize">
+                    {result.sentiment}
+                  </span>
+                  {result.chunkIndex !== undefined && result.totalChunks !== undefined && (
+                    <span className="text-sm text-muted-foreground">
+                      Chunk {result.chunkIndex + 1} of {result.totalChunks}
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">
+              <div className="text-sm px-3 py-1.5 rounded-full bg-background font-medium">
                 {Math.round(result.confidence * 100)}% confidence
               </div>
             </div>
             
             {/* Content */}
-            <div className="p-3">
+            <div className="p-6">
               {result.markdown ? (
-                <div className="prose prose-sm max-w-none overflow-auto max-h-[60vh]">
-                  <ReactMarkdown>
+                <div className="prose prose-sm dark:prose-invert max-w-none">
+                  <ReactMarkdown
+                    components={{
+                      h1: ({node, ...props}) => <h1 className="text-2xl font-bold mb-4" {...props} />,
+                      h2: ({node, ...props}) => <h2 className="text-xl font-semibold mt-6 mb-3" {...props} />,
+                      h3: ({node, ...props}) => <h3 className="text-lg font-medium mt-4 mb-2" {...props} />,
+                      p: ({node, ...props}) => <p className="text-base leading-relaxed mb-4" {...props} />,
+                      ul: ({node, ...props}) => <ul className="my-4 space-y-2" {...props} />,
+                      li: ({node, ...props}) => <li className="flex items-center gap-2" {...props} />,
+                      blockquote: ({node, ...props}) => (
+                        <blockquote className="border-l-4 border-muted pl-4 italic my-4" {...props} />
+                      ),
+                      strong: ({node, ...props}) => <strong className="font-semibold" {...props} />,
+                    }}
+                  >
                     {result.markdown}
                   </ReactMarkdown>
                 </div>
               ) : (
-                <div className="whitespace-pre-wrap text-sm text-gray-700 max-h-[60vh] overflow-auto">
-                  {result.text}
-                </div>
+                <p className="text-base text-muted-foreground">{result.text}</p>
               )}
             </div>
           </div>
@@ -450,42 +518,16 @@ function Popup() {
 
   return (
     <div className="w-[400px] min-h-[300px] bg-white">
-      <header className="border-b p-4">
+      <header className="bg-[#1a365d] text-white p-4 rounded-t-lg shadow-sm">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <BarChart className="h-5 w-5 text-blue-600" />
-            <h1 className="font-semibold text-lg">Content Analyzer</h1>
+          <div className="flex items-center">
+            <BarChart className="h-5 w-5 text-blue-200" />
+            <h1 className="font-semibold text-lg ml-2 tracking-wide">Content Analyzer</h1>
           </div>
-          {(results.length > 0 || error) && (
-            <>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearResults}
-                className="text-gray-500 hover:text-gray-700"
-              >
-                Clear
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleExportCSV}
-                className="text-gray-500 hover:text-gray-700"
-              >
-                <Download className="h-4 w-4 mr-2" />
-                Export CSV
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleExportMarkdown}
-                className="text-gray-500 hover:text-gray-700"
-              >
-                <Download className="h-4 w-4 mr-2" />
-                Export Markdown
-              </Button>
-            </>
-          )}
+          <img src={logo} alt="Content Analyzer Logo" className="h-8 w-8" />
+        </div>
+        <div className="text-blue-200 text-xs mt-1 font-medium tracking-wide">
+          Analyze sentiment and feedback from any page
         </div>
       </header>
 
