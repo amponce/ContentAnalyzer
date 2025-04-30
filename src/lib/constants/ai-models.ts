@@ -1,10 +1,10 @@
 export const AI_MODELS = {
   // Vision and OCR
-  VISION: 'o4-vision-2025-04-16',
+  VISION: 'gpt-4o-audio-preview',
   VISION_FALLBACK: 'gpt-4.1',
 
   // Text Processing
-  TEXT_PROCESSING: 'o4-mini-2025-04-16',
+  TEXT_PROCESSING: 'o4-mini',
   TEXT_PROCESSING_HIGH_ACCURACY: 'o3',  // When highest accuracy needed
 
   // Form Processing

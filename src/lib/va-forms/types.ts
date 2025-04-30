@@ -18,10 +18,26 @@ export interface VAForm {
   }[];
 }
 
+export interface VAFormTemplate {
+  formNumber: string;
+  formTitle: string;
+  sections: {
+    title: string;
+    fields: VAFormField[];
+  }[];
+  fieldExtractors: {
+    [fieldId: string]: {
+      patterns: string[];  // Regex patterns to match field content
+      preprocessor?: (text: string) => string;  // Optional text preprocessing
+      validator?: (value: string) => boolean;   // Optional value validation
+    };
+  };
+}
+
 export interface OCRResult {
-  confidence: number;
   text: string;
-  boundingBox: {
+  confidence: number;
+  boundingBox?: {
     x: number;
     y: number;
     width: number;

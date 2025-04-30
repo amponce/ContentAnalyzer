@@ -3,49 +3,134 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2, FileText, Download } from "lucide-react";
+import { Loader2, Download, CheckCircle, AlertCircle, Edit, Save, FileWarning } from "lucide-react";
 import { VAFormProcessor as FormProcessor } from '@/lib/va-forms/form-processor';
-import type { FormProcessingResult, FormSummary } from '@/lib/va-forms/types';
+import { PDFProcessor } from '@/lib/pdf-processor';
+import type { FormProcessingResult, FormSummary, VAFormField } from '@/lib/va-forms/types';
+import {
+  PERSONAL_INFO_FIELDS,
+  SERVICE_INFO_FIELDS,
+  CONTACT_INFO_FIELDS,
+  MEDICAL_INFO_FIELDS,
+  DEPENDENT_INFO_FIELDS,
+  EMPLOYMENT_INFO_FIELDS,
+  DECLARATION_FIELDS
+} from '@/lib/va-forms/common-fields';
 
 export function VAFormProcessorComponent() {
+  const [file, setFile] = useState<File | null>(null);
   const [processing, setProcessing] = useState(false);
   const [result, setResult] = useState<FormProcessingResult | null>(null);
   const [summary, setSummary] = useState<FormSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [formData, setFormData] = useState<{[key: string]: string}>({});
+  const pdfProcessor = new PDFProcessor();
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const isPDF = (file: File) => {
+    return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+  };
+
+  const isImage = (file: File) => {
+    return file.type.startsWith('image/');
+  };
+
+  const convertPDFToImage = async (pdfFile: File): Promise<string> => {
+    try {
+      const buffer = await pdfFile.arrayBuffer();
+      console.log('Converting PDF to image...');
+      const pages = await pdfProcessor.processPDF(buffer);
+      
+      if (pages.length === 0) {
+        throw new Error('No pages found in PDF');
+      }
+      
+      // For now, we'll just use the first page
+      // TODO: Add support for multi-page forms if needed
+      return pages[0].imageData;
+    } catch (error) {
+      // Log the actual error for debugging
+      console.error('Detailed PDF processing error:', error);
+      
+      // Pass through the actual error message instead of a generic one
+      if (error instanceof Error) {
+        throw new Error(`PDF processing failed: ${error.message}`);
+      }
+      throw error;
+    }
+  };
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0];
+    if (!selectedFile) return;
+
+    // Validate file type
+    if (!isPDF(selectedFile) && !isImage(selectedFile)) {
+      setError('Invalid file type. Please upload a PDF or image file (jpg, png, etc).');
+      return;
+    }
+
+    setFile(selectedFile);
+    setError(null);
+    setResult(null);
+    setSummary(null);
+    setFormData({});
+  };
+
+  const handleProcessForm = async () => {
+    if (!file) {
+      setError('Please select a file first');
+      return;
+    }
 
     setProcessing(true);
     setError(null);
 
     try {
-      // Convert file to base64
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const imageData = e.target?.result as string;
-        
-        // Get API key from storage
-        const { apiKey } = await chrome.storage.sync.get(['apiKey']);
-        if (!apiKey) {
-          throw new Error('Please configure your OpenAI API key first');
+      // Get API key from storage
+      const { apiKey } = await chrome.storage.sync.get(['apiKey']);
+      if (!apiKey) {
+        throw new Error('Please configure your OpenAI API key in the settings first');
+      }
+
+      let imageData: string;
+      
+      try {
+        if (isPDF(file)) {
+          imageData = await convertPDFToImage(file);
+        } else {
+          // Handle image file
+          imageData = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => resolve(e.target?.result as string);
+            reader.onerror = () => reject(new Error('Failed to read the image file. Please try again.'));
+            reader.readAsDataURL(file);
+          });
         }
 
         const processor = new FormProcessor(apiKey);
-        
-        // Process the form
         const processingResult = await processor.processScannedForm(imageData);
         setResult(processingResult);
 
         if (processingResult.formIdentified) {
-          // Generate summary
           const formSummary = await processor.generateFormSummary(processingResult);
           setSummary(formSummary);
+          
+          setFormData(Object.entries(processingResult.fields).reduce((acc, [key, field]) => ({
+            ...acc,
+            [key]: field.value
+          }), {}));
+        } else {
+          setError('Could not identify the form type. Please make sure you uploaded a valid VA form.');
         }
-      };
-
-      reader.readAsDataURL(file);
+      } catch (err) {
+        if (err instanceof Error) {
+          setError(err.message);
+        } else {
+          setError('An error occurred while processing the form');
+        }
+        console.error('Form processing error:', err);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -53,20 +138,99 @@ export function VAFormProcessorComponent() {
     }
   };
 
-  const handleCreateDigitalForm = async () => {
+  const handleFieldChange = (fieldId: string, value: string) => {
+    setFormData(prev => ({
+      ...prev,
+      [fieldId]: value
+    }));
+  };
+
+  const handleSaveForm = async () => {
     if (!result) return;
 
     try {
       setProcessing(true);
       const { apiKey } = await chrome.storage.sync.get(['apiKey']);
       const processor = new FormProcessor(apiKey);
-      await processor.createDigitalForm(result);
-      // Handle the digital form creation result
+      
+      // Create digital form with updated data
+      const digitalForm = await processor.createDigitalForm({
+        ...result,
+        fields: Object.entries(formData).reduce((acc, [key, value]) => ({
+          ...acc,
+          [key]: { value, confidence: 1 }
+        }), {})
+      });
+
+      // Download the form as JSON
+      const blob = new Blob([JSON.stringify(digitalForm, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${result.formNumber || 'va-form'}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setEditMode(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : 'Failed to save form');
     } finally {
       setProcessing(false);
     }
+  };
+
+  const renderFields = (fields: VAFormField[]) => {
+    return fields.map(field => (
+      <div key={field.id} className="space-y-1">
+        <Label htmlFor={field.id} className="text-sm font-medium">
+          {field.label}
+          {field.required && <span className="text-red-500 ml-1">*</span>}
+        </Label>
+        {field.type === 'select' ? (
+          <select
+            id={field.id}
+            value={formData[field.id] || ''}
+            onChange={(e) => handleFieldChange(field.id, e.target.value)}
+            disabled={!editMode}
+            className="w-full p-2 border rounded-md bg-white disabled:bg-gray-100"
+          >
+            <option value="">Select...</option>
+            {field.options?.map(option => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        ) : field.type === 'checkbox' ? (
+          <input
+            type="checkbox"
+            id={field.id}
+            checked={formData[field.id] === 'true'}
+            onChange={(e) => handleFieldChange(field.id, e.target.checked.toString())}
+            disabled={!editMode}
+            className="h-4 w-4 rounded border-gray-300"
+          />
+        ) : field.type === 'date' ? (
+          <input
+            type="date"
+            id={field.id}
+            value={formData[field.id] || ''}
+            onChange={(e) => handleFieldChange(field.id, e.target.value)}
+            disabled={!editMode}
+            className="w-full p-2 border rounded-md disabled:bg-gray-100"
+          />
+        ) : (
+          <input
+            type="text"
+            id={field.id}
+            value={formData[field.id] || ''}
+            onChange={(e) => handleFieldChange(field.id, e.target.value)}
+            disabled={!editMode}
+            className="w-full p-2 border rounded-md disabled:bg-gray-100"
+          />
+        )}
+      </div>
+    ));
   };
 
   return (
@@ -77,50 +241,99 @@ export function VAFormProcessorComponent() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid w-full max-w-sm items-center gap-1.5">
-            <Label htmlFor="form-upload">Upload VA Form</Label>
+            <Label htmlFor="form-upload">Upload VA Form (PDF or Image)</Label>
             <Input
               id="form-upload"
               type="file"
-              accept="image/*,.pdf"
-              onChange={handleFileUpload}
+              accept="application/pdf,image/*"
+              onChange={handleFileSelect}
               disabled={processing}
             />
+            {file && (
+              <p className="text-sm text-muted-foreground">
+                Selected file: {file.name}
+                {isPDF(file) && (
+                  <span className="text-blue-600 ml-2">
+                    (PDF will be converted automatically)
+                  </span>
+                )}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Supported formats: PDF, JPG, PNG, GIF, BMP, WEBP
+            </p>
           </div>
 
-          {processing && (
-            <div className="flex items-center justify-center p-4">
-              <Loader2 className="h-8 w-8 animate-spin" />
-              <span className="ml-2">Processing form...</span>
-            </div>
-          )}
+          <Button
+            onClick={handleProcessForm}
+            disabled={!file || processing}
+            className="w-full"
+          >
+            {processing ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {file && isPDF(file) ? 'Converting PDF and Processing Form...' : 'Processing Form...'}
+              </>
+            ) : (
+              <>
+                <CheckCircle className="mr-2 h-4 w-4" />
+                Process Form
+              </>
+            )}
+          </Button>
 
           {error && (
-            <div className="text-red-500 p-2 rounded bg-red-50">
-              {error}
+            <div className="flex flex-col gap-2 text-red-500 p-4 rounded bg-red-50 border border-red-200">
+              <div className="flex items-center gap-2">
+                <FileWarning className="h-5 w-5 flex-shrink-0" />
+                <h3 className="font-semibold">Error Processing Form</h3>
+              </div>
+              <div className="pl-7">
+                <p className="text-sm whitespace-pre-wrap">{error}</p>
+                {error.includes('PDF') && (
+                  <div className="text-sm mt-2">
+                    <p>Common issues with PDF processing:</p>
+                    <ul className="list-disc pl-5 mt-1 space-y-1">
+                      <li>The PDF file might be corrupted</li>
+                      <li>The PDF might be password protected</li>
+                      <li>The PDF might not contain any pages</li>
+                      <li>The PDF might be in an unsupported format</li>
+                    </ul>
+                    <p className="mt-2">Try downloading the PDF again or converting it to an image format.</p>
+                  </div>
+                )}
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className="mt-3"
+                  onClick={() => setError(null)}
+                >
+                  Dismiss
+                </Button>
+              </div>
             </div>
           )}
 
           {result && summary && (
-            <div className="space-y-4">
-              <div className="border rounded p-4">
-                <h3 className="font-semibold mb-2">Form Details</h3>
-                <p>Form Number: {result.formNumber}</p>
-                <p>Form Title: {result.formTitle}</p>
+            <div className="space-y-6">
+              {/* Form Identification */}
+              <div className="border rounded-lg p-4 bg-blue-50">
+                <div className="flex items-center gap-2 text-blue-700 mb-2">
+                  <CheckCircle className="h-5 w-5" />
+                  <h3 className="font-semibold">Form Identified</h3>
+                </div>
+                <p className="text-sm">Form Number: {result.formNumber}</p>
+                <p className="text-sm">Form Title: {result.formTitle}</p>
               </div>
 
-              <div className="border rounded p-4">
-                <h3 className="font-semibold mb-2">Summary</h3>
-                <ul className="list-disc pl-4 space-y-1">
-                  {summary.keyFindings.map((finding, i) => (
-                    <li key={i}>{finding}</li>
-                  ))}
-                </ul>
-              </div>
-
+              {/* Missing Required Fields Warning */}
               {summary.missingRequired.length > 0 && (
-                <div className="border rounded p-4 bg-yellow-50">
-                  <h3 className="font-semibold mb-2">Missing Required Fields</h3>
-                  <ul className="list-disc pl-4 space-y-1">
+                <div className="border rounded-lg p-4 bg-yellow-50">
+                  <div className="flex items-center gap-2 text-yellow-700 mb-2">
+                    <AlertCircle className="h-5 w-5" />
+                    <h3 className="font-semibold">Missing Required Fields</h3>
+                  </div>
+                  <ul className="list-disc pl-5 text-sm space-y-1">
                     {summary.missingRequired.map((field, i) => (
                       <li key={i}>{field}</li>
                     ))}
@@ -128,23 +341,98 @@ export function VAFormProcessorComponent() {
                 </div>
               )}
 
-              <div className="flex gap-2">
-                <Button
-                  onClick={handleCreateDigitalForm}
-                  disabled={processing}
-                >
-                  <FileText className="mr-2 h-4 w-4" />
-                  Create Digital Form
-                </Button>
-                {summary.digitalFormUrl && (
+              {/* Form Fields */}
+              <div className="border rounded-lg p-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold">Extracted Form Data</h3>
                   <Button
-                    variant="outline"
-                    onClick={() => window.open(summary.digitalFormUrl)}
+                    variant={editMode ? "default" : "outline"}
+                    onClick={() => setEditMode(!editMode)}
+                    disabled={processing}
                   >
-                    <Download className="mr-2 h-4 w-4" />
-                    Download Digital Form
+                    <Edit className="h-4 w-4 mr-2" />
+                    {editMode ? 'Editing...' : 'Edit Fields'}
+                  </Button>
+                </div>
+
+                <div className="space-y-6">
+                  {/* Personal Information */}
+                  <div className="space-y-4">
+                    <h4 className="font-medium text-gray-700">Personal Information</h4>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {renderFields(PERSONAL_INFO_FIELDS)}
+                    </div>
+                  </div>
+
+                  {/* Service Information */}
+                  <div className="space-y-4">
+                    <h4 className="font-medium text-gray-700">Service Information</h4>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {renderFields(SERVICE_INFO_FIELDS)}
+                    </div>
+                  </div>
+
+                  {/* Contact Information */}
+                  <div className="space-y-4">
+                    <h4 className="font-medium text-gray-700">Contact Information</h4>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {renderFields(CONTACT_INFO_FIELDS)}
+                    </div>
+                  </div>
+
+                  {/* Medical Information */}
+                  <div className="space-y-4">
+                    <h4 className="font-medium text-gray-700">Medical Information</h4>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {renderFields(MEDICAL_INFO_FIELDS)}
+                    </div>
+                  </div>
+
+                  {/* Dependent Information */}
+                  <div className="space-y-4">
+                    <h4 className="font-medium text-gray-700">Dependent Information</h4>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {renderFields(DEPENDENT_INFO_FIELDS)}
+                    </div>
+                  </div>
+
+                  {/* Employment Information */}
+                  <div className="space-y-4">
+                    <h4 className="font-medium text-gray-700">Employment Information</h4>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {renderFields(EMPLOYMENT_INFO_FIELDS)}
+                    </div>
+                  </div>
+
+                  {/* Declaration */}
+                  <div className="space-y-4">
+                    <h4 className="font-medium text-gray-700">Declaration</h4>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {renderFields(DECLARATION_FIELDS)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 justify-end">
+                {editMode && (
+                  <Button
+                    onClick={handleSaveForm}
+                    disabled={processing}
+                  >
+                    <Save className="h-4 w-4 mr-2" />
+                    Save Changes
                   </Button>
                 )}
+                <Button
+                  variant="outline"
+                  onClick={() => window.open(summary.digitalFormUrl)}
+                  disabled={!summary.digitalFormUrl}
+                >
+                  <Download className="h-4 w-4 mr-2" />
+                  Download Original Form
+                </Button>
               </div>
             </div>
           )}
