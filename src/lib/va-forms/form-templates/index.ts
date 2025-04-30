@@ -1,5 +1,6 @@
 import { VAFormTemplate } from '../types';
 import { VA5655Template } from './va5655';
+import { createGenericTemplate } from './generic-template';
 
 export interface FormTemplateRegistry {
   [formNumber: string]: () => Promise<VAFormTemplate>;
@@ -14,9 +15,14 @@ export async function registerFormTemplate(formNumber: string, template: VAFormT
 }
 
 export async function getFormTemplate(formNumber: string): Promise<VAFormTemplate | null> {
-  const templateLoader = formTemplates[formNumber];
+  // Clean formNumber to handle variations in format (e.g., "VA-5655", "VA 5655", etc.)
+  const cleanedFormNumber = formNumber.replace(/^va[\s-]*/i, '').trim();
+  
+  const templateLoader = formTemplates[cleanedFormNumber];
   if (!templateLoader) {
-    return null;
+    console.warn(`No specific template found for form ${formNumber}, using generic template`);
+    // Return a generic template instead of null
+    return createGenericTemplate(formNumber);
   }
   return await templateLoader();
 }

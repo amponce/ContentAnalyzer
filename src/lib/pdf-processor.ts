@@ -1,8 +1,9 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
 
-// Initialize PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+// Use fake worker to avoid CSP issues with Chrome extensions
+// This is a tradeoff that affects performance but ensures compatibility
+pdfjsLib.GlobalWorkerOptions.workerSrc = '';
 
 export interface PDFPage {
   pageNumber: number;
@@ -44,30 +45,42 @@ export class PDFProcessor {
    * Process a PDF file and convert its pages to images
    */
   async processPDF(pdfData: ArrayBuffer): Promise<PDFPage[]> {
-    const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
-    const pages: PDFPage[] = [];
+    try {
+      const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+      const pages: PDFPage[] = [];
 
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const pageImage = await this.convertPageToImage(page);
-      pages.push(pageImage);
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const pageImage = await this.convertPageToImage(page);
+        pages.push(pageImage);
+      }
+
+      return pages;
+    } catch (error) {
+      console.error("PDF processing error:", error);
+      // Re-throw the error for the caller to handle
+      throw error;
     }
-
-    return pages;
   }
 
   /**
    * Extract form fields from a PDF
    */
   async extractFormFields(pdfData: ArrayBuffer): Promise<any> {
-    const pdfDoc = await PDFDocument.load(pdfData);
-    const form = pdfDoc.getForm();
-    const fields = form.getFields();
-    
-    return fields.map(field => ({
-      name: field.getName(),
-      type: field.constructor.name,
-      isRequired: false, // You might want to implement logic to determine if a field is required
-    }));
+    try {
+      const pdfDoc = await PDFDocument.load(pdfData);
+      const form = pdfDoc.getForm();
+      const fields = form.getFields();
+      
+      return fields.map(field => ({
+        name: field.getName(),
+        type: field.constructor.name,
+        isRequired: false, // You might want to implement logic to determine if a field is required
+      }));
+    } catch (error) {
+      console.error("Form field extraction error:", error);
+      // Return empty fields array rather than failing completely
+      return [];
+    }
   }
 } 

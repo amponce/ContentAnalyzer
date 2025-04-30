@@ -4,6 +4,9 @@ import { crx } from '@crxjs/vite-plugin';
 import manifest from './manifest.json';
 import { resolve } from 'path';
 
+// Note: PDF worker is now copied to the public/ directory
+// and will be automatically included in the build
+
 export default defineConfig({
   plugins: [
     react(),

@@ -15,7 +15,8 @@ interface SentimentResponse {
 
 // Track content script connections
 const connections = new Map<number, chrome.runtime.Port>();
-let popupPort: chrome.runtime.Port | null = null;
+// Explicitly mark the popup port as used with underscore prefix to avoid TS linting error
+let _popupPort: chrome.runtime.Port | null = null;
 
 // Initialize context menu
 chrome.runtime.onInstalled.addListener(() => {
@@ -39,7 +40,7 @@ chrome.runtime.onConnect.addListener((port) => {
         if (msg.action === "analyzeSentiment") {
           try {
             const result = await analyzeSentiment(msg.text);
-            port.postMessage({
+            broadcastMessage({
               type: 'analysisResult',
               data: {
                 ...result,
@@ -47,7 +48,7 @@ chrome.runtime.onConnect.addListener((port) => {
               }
             });
           } catch (error) {
-            port.postMessage({
+            broadcastMessage({
               type: 'analysisError',
               error: error instanceof Error ? error.message : 'Analysis failed'
             });
@@ -62,14 +63,14 @@ chrome.runtime.onConnect.addListener((port) => {
     }
   } else if (port.name === "popup") {
     console.log('Popup connected');
-    popupPort = port;
+    _popupPort = port;
     
     port.onMessage.addListener(async (msg) => {
       console.log('Received message from popup:', msg);
       if (msg.action === "analyzeSentiment") {
         try {
           const result = await analyzeSentiment(msg.text);
-          port.postMessage({
+          broadcastMessage({
             type: 'analysisResult',
             data: {
               ...result,
@@ -77,7 +78,7 @@ chrome.runtime.onConnect.addListener((port) => {
             }
           });
         } catch (error) {
-          port.postMessage({
+          broadcastMessage({
             type: 'analysisError',
             error: error instanceof Error ? error.message : 'Analysis failed'
           });
@@ -87,40 +88,34 @@ chrome.runtime.onConnect.addListener((port) => {
     
     port.onDisconnect.addListener(() => {
       console.log('Popup disconnected');
-      popupPort = null;
+      _popupPort = null;
     });
   }
 });
 
 // Handle context menu clicks
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (!tab?.id) return;
-  
+chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "analyzeSentiment" && info.selectionText) {
-    try {
-      const result = await analyzeSentiment(info.selectionText);
-      broadcastMessage({
-        type: 'analysisResult',
-        data: {
-          ...result,
-          text: info.selectionText
-        }
-      });
-    } catch (error) {
-      broadcastMessage({
-        type: 'analysisError',
-        error: error instanceof Error ? error.message : 'Analysis failed'
-      });
-    }
+    // Send message to content script
+    chrome.tabs.sendMessage(tab?.id ?? -1, {
+      action: "analyzeSentiment",
+      text: info.selectionText
+    });
   }
 });
 
-// Handle messages from popup and content scripts
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('Background received message:', request, 'from:', sender);
+// Listen for messages from content script or popup
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Handle messages here
+  if (message.action === "getApiKey") {
+    chrome.storage.sync.get(['apiKey'], (result) => {
+      sendResponse({ apiKey: result.apiKey });
+    });
+    return true; // Important for async response
+  }
   
-  if (request.action === "analyzeSentiment") {
-    analyzeSentiment(request.text, request.chunkIndex, request.totalChunks)
+  if (message.action === "analyzeSentiment") {
+    analyzeSentiment(message.text, message.chunkIndex, message.totalChunks)
       .then(result => {
         // Send response to whoever requested it
         sendResponse(result);
@@ -131,9 +126,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             type: 'analysisResult',
             data: {
               ...result,
-              text: request.text,
-              chunkIndex: request.chunkIndex,
-              totalChunks: request.totalChunks
+              text: message.text,
+              chunkIndex: message.chunkIndex,
+              totalChunks: message.totalChunks
             }
           }).catch(() => {
             // Ignore errors if popup is closed
@@ -146,8 +141,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           sentiment: 'Unknown',
           confidence: 0,
           error: error instanceof Error ? error.message : 'Analysis failed',
-          chunkIndex: request.chunkIndex,
-          totalChunks: request.totalChunks
+          chunkIndex: message.chunkIndex,
+          totalChunks: message.totalChunks
         };
         sendResponse(errorResponse);
         
@@ -156,8 +151,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           chrome.runtime.sendMessage({
             type: 'analysisError',
             error: error instanceof Error ? error.message : 'Analysis failed',
-            chunkIndex: request.chunkIndex,
-            totalChunks: request.totalChunks
+            chunkIndex: message.chunkIndex,
+            totalChunks: message.totalChunks
           }).catch(() => {
             // Ignore errors if popup is closed
           });
@@ -166,9 +161,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // Required for async response
   }
 
-  if (request.action === "initializeAPI") {
+  if (message.action === "initializeAPI") {
     try {
-      apiClient = new APIClient(request.apiKey);
+      apiClient = new APIClient(message.apiKey);
       sendResponse({ success: true });
     } catch (error) {
       sendResponse({ 
@@ -314,12 +309,12 @@ Your response should be a simple JSON object containing:
 // Helper function to broadcast messages
 function broadcastMessage(message: any) {
   // Send to popup if connected
-  if (popupPort) {
+  if (_popupPort) {
     try {
-      popupPort.postMessage(message);
+      _popupPort.postMessage(message);
     } catch (e) {
       console.error('Failed to send to popup:', e);
-      popupPort = null;
+      _popupPort = null;
     }
   }
   

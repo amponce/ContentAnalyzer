@@ -58,6 +58,12 @@ export class VAFormProcessor {
    */
   private async performOCR(imageData: string): Promise<OCRResult[]> {
     try {
+      // First check if the image format is compatible (some models don't support certain image formats)
+      if (imageData.startsWith('data:text/plain') || imageData.startsWith('data:application/octet-stream')) {
+        console.warn('Image data is in an unsupported format, trying fallback with generic OCR');
+        return this.performOCRWithFallback(imageData);
+      }
+      
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -103,6 +109,13 @@ export class VAFormProcessor {
         } else if (response.status === 401) {
           throw new Error('OCR failed: Invalid API key or unauthorized access');
         } else if (response.status === 400) {
+          // Check for model compatibility issues
+          if (errorBody.includes('does not support image_url') || 
+              errorBody.includes('invalid_value') ||
+              errorBody.includes('invalid_request_error')) {
+            console.warn('Primary OCR failed with model compatibility error, attempting fallback:', errorBody);
+            return this.performOCRWithFallback(imageData);
+          }
           throw new Error(`OCR failed: Bad request - ${errorBody}`);
         } else {
           throw new Error(`OCR failed: ${response.status} - ${response.statusText} - ${errorBody}`);
