@@ -1,9 +1,9 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
 
-// Use fake worker to avoid CSP issues with Chrome extensions
-// This is a tradeoff that affects performance but ensures compatibility
-pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+// Properly set the worker source for Chrome extension environment
+// Chrome extensions need to use a local worker file due to CSP restrictions
+pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.js');
 
 export interface PDFPage {
   pageNumber: number;
@@ -46,7 +46,17 @@ export class PDFProcessor {
    */
   async processPDF(pdfData: ArrayBuffer): Promise<PDFPage[]> {
     try {
-      const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+      console.log('Starting PDF processing with PDF.js');
+      
+      // Set a timeout to avoid UI freezing
+      const pdf = await Promise.race([
+        pdfjsLib.getDocument({ data: pdfData }).promise,
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('PDF processing timed out')), 30000)
+        )
+      ]) as pdfjsLib.PDFDocumentProxy;
+      
+      console.log(`PDF loaded successfully with ${pdf.numPages} pages`);
       const pages: PDFPage[] = [];
 
       for (let i = 1; i <= pdf.numPages; i++) {

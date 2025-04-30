@@ -94,29 +94,59 @@ export class APIClient {
    * Process VA form images using vision API
    */
   async processFormImage(imageData: string, detail: 'low' | 'high' | 'auto' = 'high') {
-    const completion = await this.client.chat.completions.create({
-      model: AI_MODELS.VISION,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: "Please analyze this VA form image. Extract all text and their positions. For each text element, provide the confidence score and bounding box coordinates."
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: imageData,
-                detail
+    try {
+      console.log(`Processing form image with vision model: ${AI_MODELS.VISION}`);
+      
+      // Check image size and format
+      if (!imageData.startsWith('data:')) {
+        throw new Error('Invalid image format. Must be a data URL.');
+      }
+      
+      // Estimate image size (rough calculation)
+      const sizeInKB = Math.round((imageData.length * 3) / 4 / 1024);
+      console.log(`Approximate image size: ${sizeInKB} KB`);
+      
+      // Check if image is too large
+      if (sizeInKB > 20000) { // 20MB
+        console.warn('Image is very large, may cause API issues');
+      }
+      
+      const completion = await this.client.chat.completions.create({
+        model: AI_MODELS.VISION,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Please analyze this VA form image. Extract all text and their positions. For each text element, provide the confidence score and bounding box coordinates."
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: imageData,
+                  detail
+                }
               }
-            }
-          ]
-        }
-      ]
-    });
+            ]
+          }
+        ]
+      });
 
-    return completion.choices[0].message.content;
+      console.log('Vision API processing completed successfully');
+      return completion.choices[0].message.content;
+    } catch (error: any) {
+      console.error('Error in vision API processing:', error);
+      
+      // Provide more helpful error message
+      if (error.response?.status === 400) {
+        throw new Error(`Vision API error: The image may be too large or in an unsupported format (${error.message})`);
+      } else if (error.response?.status === 401) {
+        throw new Error('Vision API error: Invalid API key. Please check your settings.');
+      } else {
+        throw error;
+      }
+    }
   }
 
   /**

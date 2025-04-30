@@ -1,7 +1,7 @@
 export const AI_MODELS = {
   // Vision and OCR
-  VISION: 'gpt-4o-audio-preview',
-  VISION_FALLBACK: 'gpt-4.1',
+  VISION: 'gpt-4o',  // PDF and Vision capable model
+  VISION_FALLBACK: 'gpt-4o-mini',  // Cheaper fallback that still handles PDFs
 
   // Text Processing
   TEXT_PROCESSING: 'o4-mini',
@@ -9,7 +9,7 @@ export const AI_MODELS = {
 
   // Form Processing
   FORM_PROCESSING: 'gpt-4o',
-  FORM_PROCESSING_FALLBACK: 'gpt-4.1',
+  FORM_PROCESSING_FALLBACK: 'gpt-4o',
 
   // Web Search
   WEB_SEARCH: 'o4-web-2025-04-16',

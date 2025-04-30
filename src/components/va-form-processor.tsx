@@ -6,16 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Loader2, Download, CheckCircle, AlertCircle, Edit, Save, FileWarning } from "lucide-react";
 import { VAFormProcessor as FormProcessor } from '@/lib/va-forms/form-processor';
 import { PDFProcessor } from '@/lib/pdf-processor';
-import type { FormProcessingResult, FormSummary, VAFormField } from '@/lib/va-forms/types';
-import {
-  PERSONAL_INFO_FIELDS,
-  SERVICE_INFO_FIELDS,
-  CONTACT_INFO_FIELDS,
-  MEDICAL_INFO_FIELDS,
-  DEPENDENT_INFO_FIELDS,
-  EMPLOYMENT_INFO_FIELDS,
-  DECLARATION_FIELDS
-} from '@/lib/va-forms/common-fields';
+import type { FormProcessingResult, FormSummary } from '@/lib/va-forms/types';
 
 export function VAFormProcessorComponent() {
   const [file, setFile] = useState<File | null>(null);
@@ -51,7 +42,19 @@ export function VAFormProcessorComponent() {
         
         // For now, we'll just use the first page
         // TODO: Add support for multi-page forms if needed
-        return pages[0].imageData;
+        
+        // Check if the image is too large for API processing
+        let imageData = pages[0].imageData;
+        const sizeInKB = Math.round((imageData.length * 3) / 4 / 1024);
+        console.log(`Original PDF image size: ~${sizeInKB} KB`);
+        
+        // If image is too large, resize it using the canvas
+        if (sizeInKB > 10000) { // 10MB is big for API processing
+          console.log('Image is large, reducing size to avoid API limits...');
+          imageData = await reduceImageSize(imageData, 0.7); // Reduce quality
+        }
+        
+        return imageData;
       } catch (processingError) {
         // Log the actual error for debugging
         console.error('Detailed PDF processing error:', processingError);
@@ -76,12 +79,13 @@ export function VAFormProcessorComponent() {
   const convertPDFUsingBrowser = (_: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       try {
+        console.log('Using browser-based PDF fallback rendering');
         // Create a simple canvas with text explaining this is a fallback
         const canvas = canvasRef.current || document.createElement('canvas');
         
-        // Set canvas dimensions
-        canvas.width = 1200;  // Default width
-        canvas.height = 1600; // Approximate 8.5x11 ratio
+        // Set canvas dimensions - reduced to avoid API size limits
+        canvas.width = 800;  // Reduced width for API compatibility
+        canvas.height = 1000; // Reduced height
         
         const ctx = canvas.getContext('2d');
         if (!ctx) {
@@ -101,51 +105,88 @@ export function VAFormProcessorComponent() {
         // Add VA logo representation
         ctx.fillStyle = '#003e7e'; // VA blue
         ctx.beginPath();
-        ctx.arc(canvas.width / 2, 150, 50, 0, Math.PI * 2);
+        ctx.arc(canvas.width / 2, 100, 30, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = 'white';
-        ctx.font = 'bold 40px Arial';
-        ctx.fillText('VA', canvas.width / 2 - 25, 165);
+        ctx.font = 'bold 30px Arial';
+        ctx.fillText('VA', canvas.width / 2 - 15, 110);
         
         // Add text explaining this is a fallback
-        ctx.font = 'bold 24px Arial';
+        ctx.font = 'bold 18px Arial';
         ctx.fillStyle = 'black';
-        ctx.fillText('VA FORM (FALLBACK MODE)', canvas.width / 2 - 180, 250);
+        ctx.fillText('VA FORM (FALLBACK MODE)', canvas.width / 2 - 120, 180);
         
-        ctx.font = '18px Arial';
-        ctx.fillText('This PDF is being processed in compatibility mode', canvas.width / 2 - 220, 290);
-        ctx.fillText('The AI will attempt to extract and identify this form', canvas.width / 2 - 220, 320);
+        ctx.font = '14px Arial';
+        ctx.fillText('PDF being processed in compatibility mode', canvas.width / 2 - 140, 220);
         
-        // Add form-like elements
+        // Add form-like elements (simplified version)
         ctx.fillStyle = '#666666';
-        ctx.font = '16px Arial';
+        ctx.font = '14px Arial';
         
-        // Personal info section
-        ctx.fillText('PERSONAL INFORMATION', 100, 400);
-        ctx.strokeRect(100, 420, 400, 40); // Name field
-        ctx.fillText('Full Name', 100, 415);
+        // Generate light form grid to help OCR processing
+        for (let i = 0; i < 5; i++) {
+          const y = 300 + i * 120;
+          ctx.fillText(`SECTION ${i+1}`, 100, y - 20);
+          
+          for (let j = 0; j < 2; j++) {
+            const x = 100 + j * 350;
+            ctx.fillText(`Field ${i*2+j+1}`, x, y - 5);
+            ctx.strokeRect(x, y, 300, 30);
+          }
+        }
         
-        ctx.fillText('Date of Birth', 550, 415);
-        ctx.strokeRect(550, 420, 200, 40); // DOB field
+        // Get the image data with reduced quality to decrease size
+        const imageData = canvas.toDataURL('image/jpeg', 0.7);
         
-        ctx.fillText('SSN', 800, 415);
-        ctx.strokeRect(800, 420, 200, 40); // SSN field
-        
-        // Service info
-        ctx.fillText('SERVICE INFORMATION', 100, 500);
-        ctx.fillText('Branch', 100, 515);
-        ctx.strokeRect(100, 520, 300, 40);
-        
-        ctx.fillText('Service Dates', 450, 515);
-        ctx.strokeRect(450, 520, 300, 40);
-        
-        // Get the image data
-        const imageData = canvas.toDataURL('image/png');
+        console.log(`Generated fallback image size: ~${Math.round(imageData.length / 1024)} KB`);
         resolve(imageData);
       } catch (error) {
         console.error('Fallback rendering error:', error);
         reject(new Error('Could not create fallback PDF image'));
       }
+    });
+  };
+
+  // Helper function to reduce image size
+  const reduceImageSize = (dataUrl: string, quality = 0.7): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        
+        // Calculate new dimensions (max 1500px on longest side)
+        let width = img.width;
+        let height = img.height;
+        const maxSize = 1500;
+        
+        if (width > height && width > maxSize) {
+          height = Math.floor((height * maxSize) / width);
+          width = maxSize;
+        } else if (height > maxSize) {
+          width = Math.floor((width * maxSize) / height);
+          height = maxSize;
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Could not get canvas context'));
+          return;
+        }
+        
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        // Convert to JPEG with reduced quality
+        const reduced = canvas.toDataURL('image/jpeg', quality);
+        const newSizeInKB = Math.round((reduced.length * 3) / 4 / 1024);
+        console.log(`Reduced image size: ~${newSizeInKB} KB`);
+        
+        resolve(reduced);
+      };
+      img.onerror = () => reject(new Error('Failed to load image for resizing'));
+      img.src = dataUrl;
     });
   };
 
@@ -199,6 +240,21 @@ export function VAFormProcessorComponent() {
 
         const processor = new FormProcessor(apiKey);
         const processingResult = await processor.processScannedForm(imageData);
+        
+        // IMPORTANT: Always consider the form identified if it has ANY fields
+        const hasFields = Object.keys(processingResult.fields).length > 0;
+        
+        if (hasFields) {
+          // If any fields were extracted, consider it identified
+          processingResult.formIdentified = true;
+          
+          // Only set generic info if no form number was found
+          if (!processingResult.formNumber) {
+            processingResult.formNumber = 'GENERIC';
+            processingResult.formTitle = 'Generic Form';
+          }
+        }
+        
         setResult(processingResult);
 
         if (processingResult.formIdentified) {
@@ -210,7 +266,8 @@ export function VAFormProcessorComponent() {
             [key]: field.value
           }), {}));
         } else {
-          setError('Could not identify the form type. Please make sure you uploaded a valid VA form.');
+          // This now only happens if NO fields were extracted at all
+          setError('No form fields were detected. Please make sure you uploaded a valid form document.');
         }
       } catch (err) {
         if (err instanceof Error) {
@@ -270,56 +327,138 @@ export function VAFormProcessorComponent() {
     }
   };
 
-  const renderFields = (fields: VAFormField[]) => {
-    return fields.map(field => (
-      <div key={field.id} className="space-y-1">
-        <Label htmlFor={field.id} className="text-sm font-medium">
-          {field.label}
-          {field.required && <span className="text-red-500 ml-1">*</span>}
-        </Label>
-        {field.type === 'select' ? (
-          <select
-            id={field.id}
-            value={formData[field.id] || ''}
-            onChange={(e) => handleFieldChange(field.id, e.target.value)}
-            disabled={!editMode}
-            className="w-full p-2 border rounded-md bg-white disabled:bg-gray-100"
-          >
-            <option value="">Select...</option>
-            {field.options?.map(option => (
-              <option key={option} value={option}>{option}</option>
-            ))}
-          </select>
-        ) : field.type === 'checkbox' ? (
-          <input
-            type="checkbox"
-            id={field.id}
-            checked={formData[field.id] === 'true'}
-            onChange={(e) => handleFieldChange(field.id, e.target.checked.toString())}
-            disabled={!editMode}
-            className="h-4 w-4 rounded border-gray-300"
-          />
-        ) : field.type === 'date' ? (
-          <input
-            type="date"
-            id={field.id}
-            value={formData[field.id] || ''}
-            onChange={(e) => handleFieldChange(field.id, e.target.value)}
-            disabled={!editMode}
-            className="w-full p-2 border rounded-md disabled:bg-gray-100"
-          />
-        ) : (
-          <input
-            type="text"
-            id={field.id}
-            value={formData[field.id] || ''}
-            onChange={(e) => handleFieldChange(field.id, e.target.value)}
-            disabled={!editMode}
-            className="w-full p-2 border rounded-md disabled:bg-gray-100"
-          />
-        )}
+  // Helper function to infer field type from field name
+  const inferFieldType = (fieldId: string, value: string): 'text' | 'checkbox' | 'date' | 'select' => {
+    // Date fields
+    if (fieldId.toLowerCase().includes('date') || /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(value)) {
+      return 'date';
+    }
+    
+    // Boolean fields
+    if (value === 'true' || value === 'false') {
+      return 'checkbox';
+    }
+    
+    // Default to text
+    return 'text';
+  };
+  
+  // Helper function to format field labels
+  const formatFieldLabel = (fieldId: string): string => {
+    return fieldId
+      // Insert a space before all uppercase letters
+      .replace(/([A-Z])/g, ' $1')
+      // Replace first character with uppercase
+      .replace(/^./, str => str.toUpperCase())
+      // Fix specific acronyms
+      .replace(' S S N', ' SSN')
+      .replace(' D O B', ' DOB')
+      .replace(' V A', ' VA');
+  };
+
+  // Updated render method for dynamic fields
+  const renderDynamicFields = () => {
+    if (!result || !formData) return null;
+    
+    // Group fields by categories based on field names
+    const fieldGroups: {[group: string]: string[]} = {
+      'Personal Information': [],
+      'Contact Information': [],
+      'Service Information': [],
+      'Medical Information': [],
+      'Financial Information': [],
+      'Other Information': []
+    };
+    
+    // Sort fields into categories
+    const fieldIds = Object.keys(formData);
+    fieldIds.forEach(fieldId => {
+      const lowerFieldId = fieldId.toLowerCase();
+      
+      if (lowerFieldId.includes('name') || lowerFieldId.includes('ssn') || 
+          lowerFieldId.includes('birth') || lowerFieldId.includes('gender')) {
+        fieldGroups['Personal Information'].push(fieldId);
+      }
+      else if (lowerFieldId.includes('address') || lowerFieldId.includes('city') || 
+               lowerFieldId.includes('state') || lowerFieldId.includes('zip') || 
+               lowerFieldId.includes('phone') || lowerFieldId.includes('email')) {
+        fieldGroups['Contact Information'].push(fieldId);
+      }
+      else if (lowerFieldId.includes('service') || lowerFieldId.includes('military') || 
+               lowerFieldId.includes('branch') || lowerFieldId.includes('discharge')) {
+        fieldGroups['Service Information'].push(fieldId);
+      }
+      else if (lowerFieldId.includes('medical') || lowerFieldId.includes('health') || 
+               lowerFieldId.includes('disability') || lowerFieldId.includes('condition')) {
+        fieldGroups['Medical Information'].push(fieldId);
+      }
+      else if (lowerFieldId.includes('income') || lowerFieldId.includes('expense') || 
+               lowerFieldId.includes('financial') || lowerFieldId.includes('payment') ||
+               lowerFieldId.includes('amount') || lowerFieldId.includes('cost')) {
+        fieldGroups['Financial Information'].push(fieldId);
+      }
+      else {
+        fieldGroups['Other Information'].push(fieldId);
+      }
+    });
+    
+    // Render each group that has fields
+    return (
+      <div className="space-y-6">
+        {Object.entries(fieldGroups).map(([groupName, groupFields]) => {
+          if (groupFields.length === 0) return null;
+          
+          return (
+            <div key={groupName} className="space-y-4">
+              <h4 className="font-medium text-gray-700">{groupName}</h4>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {groupFields.map(fieldId => {
+                  const value = formData[fieldId] || '';
+                  const fieldType = inferFieldType(fieldId, value);
+                  const label = formatFieldLabel(fieldId);
+                  
+                  return (
+                    <div key={fieldId} className="space-y-1">
+                      <Label htmlFor={fieldId} className="text-sm font-medium">
+                        {label}
+                      </Label>
+                      {fieldType === 'checkbox' ? (
+                        <input
+                          type="checkbox"
+                          id={fieldId}
+                          checked={value === 'true'}
+                          onChange={(e) => handleFieldChange(fieldId, e.target.checked.toString())}
+                          disabled={!editMode}
+                          className="h-4 w-4 rounded border-gray-300"
+                        />
+                      ) : fieldType === 'date' ? (
+                        <input
+                          type="date"
+                          id={fieldId}
+                          value={value}
+                          onChange={(e) => handleFieldChange(fieldId, e.target.value)}
+                          disabled={!editMode}
+                          className="w-full p-2 border rounded-md disabled:bg-gray-100"
+                        />
+                      ) : (
+                        <input
+                          type="text"
+                          id={fieldId}
+                          value={value}
+                          onChange={(e) => handleFieldChange(fieldId, e.target.value)}
+                          disabled={!editMode}
+                          className="w-full p-2 border rounded-md disabled:bg-gray-100"
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
       </div>
-    ));
+    );
   };
 
   return (
@@ -447,63 +586,8 @@ export function VAFormProcessorComponent() {
                   </Button>
                 </div>
 
-                <div className="space-y-6">
-                  {/* Personal Information */}
-                  <div className="space-y-4">
-                    <h4 className="font-medium text-gray-700">Personal Information</h4>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {renderFields(PERSONAL_INFO_FIELDS)}
-                    </div>
-                  </div>
-
-                  {/* Service Information */}
-                  <div className="space-y-4">
-                    <h4 className="font-medium text-gray-700">Service Information</h4>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {renderFields(SERVICE_INFO_FIELDS)}
-                    </div>
-                  </div>
-
-                  {/* Contact Information */}
-                  <div className="space-y-4">
-                    <h4 className="font-medium text-gray-700">Contact Information</h4>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {renderFields(CONTACT_INFO_FIELDS)}
-                    </div>
-                  </div>
-
-                  {/* Medical Information */}
-                  <div className="space-y-4">
-                    <h4 className="font-medium text-gray-700">Medical Information</h4>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {renderFields(MEDICAL_INFO_FIELDS)}
-                    </div>
-                  </div>
-
-                  {/* Dependent Information */}
-                  <div className="space-y-4">
-                    <h4 className="font-medium text-gray-700">Dependent Information</h4>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {renderFields(DEPENDENT_INFO_FIELDS)}
-                    </div>
-                  </div>
-
-                  {/* Employment Information */}
-                  <div className="space-y-4">
-                    <h4 className="font-medium text-gray-700">Employment Information</h4>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {renderFields(EMPLOYMENT_INFO_FIELDS)}
-                    </div>
-                  </div>
-
-                  {/* Declaration */}
-                  <div className="space-y-4">
-                    <h4 className="font-medium text-gray-700">Declaration</h4>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {renderFields(DECLARATION_FIELDS)}
-                    </div>
-                  </div>
-                </div>
+                {/* Render dynamic fields instead of static field lists */}
+                {renderDynamicFields()}
               </div>
 
               {/* Action Buttons */}
