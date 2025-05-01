@@ -1,6 +1,6 @@
 # ContentAnalyzer Chrome Extension
 
-A Chrome extension for processing and analyzing government forms of any type. The extension extracts form data from PDFs, converts it to a structured digital format, and displays it in a user-friendly interface with modern UI components.
+A Chrome extension for processing and analyzing government forms of any type. The extension extracts form data from PDFs, converts it to a structured digital format, and displays it in a user-friendly interface with modern UI components. It also provides powerful text analysis capabilities for web content.
 
 ## Features
 
@@ -10,6 +10,8 @@ A Chrome extension for processing and analyzing government forms of any type. Th
 - Support for complex nested objects and field types
 - Save, edit, print, and export form data
 - AI-powered field recognition and categorization
+- Sentiment analysis for web page content
+- Text processing from multiple sources (page context, clipboard, selected text)
 
 ## Architecture
 
@@ -78,6 +80,49 @@ The system handles various field types with specialized UI components:
 - **Complex Objects**: Expandable objects with multiple properties
 - **Arrays**: List-based fields with add/remove functionality
 
+### Sentiment Analysis and Text Processing
+
+ContentAnalyzer also provides powerful text analysis capabilities:
+
+#### Sentiment Analysis
+
+Analyze the sentiment of text from various sources:
+- **Selected Text**: Right-click on any selected text on a webpage to analyze its sentiment
+- **Page Content**: Analyze the sentiment of an entire webpage's content
+- **Custom Input**: Paste or type text directly for sentiment analysis
+
+The sentiment analysis provides:
+- Overall sentiment score (positive, negative, or neutral)
+- Confidence level for the sentiment determination
+- Key phrases that influenced the sentiment score
+- Emotional tone detection (joy, anger, sadness, etc.)
+
+#### Text Sources
+
+The extension can process text from multiple sources:
+
+- **Page Context**: Automatically extract and analyze content from the current webpage
+  - Detects main content areas vs. navigation/ads
+  - Identifies relevant sections based on context
+  - Handles dynamic content loading
+
+- **Clipboard Access**: Process text directly from your clipboard
+  - Right-click context menu option for "Analyze Clipboard Content"
+  - Supports formatted text with structural preservation
+  - Handles both plain text and rich text formats
+
+- **Selected Text**: Process specifically highlighted portions of text
+  - Maintains context from the source document
+  - Supports partial selection from larger documents
+  - Provides context-aware analysis based on surrounding content
+
+#### Usage Examples
+
+- Analyze sentiment of product reviews on e-commerce sites
+- Extract key information from news articles
+- Summarize long documents by selecting important passages
+- Verify emotional tone of your own writing before sending
+
 ## Installation
 
 1. Clone the repository
@@ -135,6 +180,40 @@ const runParserOnly = async (pdfPages) => {
   });
   
   console.log(parserResult);
+};
+```
+
+### Text Analysis API
+
+```typescript
+// Sentiment analysis API
+import { analyzeSentiment } from './src/lib/sentiment-analyzer';
+
+// Analyze text from different sources
+const analyzePage = async () => {
+  const result = await analyzeSentiment({
+    source: 'page',
+    url: window.location.href
+  });
+  console.log(result.sentiment, result.confidence, result.keyPhrases);
+};
+
+const analyzeSelection = async (selectedText) => {
+  const result = await analyzeSentiment({
+    source: 'selection',
+    text: selectedText,
+    context: document.title
+  });
+  console.log(result.sentiment, result.emotionalTones);
+};
+
+const analyzeClipboard = async () => {
+  const clipboardText = await navigator.clipboard.readText();
+  const result = await analyzeSentiment({
+    source: 'clipboard',
+    text: clipboardText
+  });
+  console.log(result);
 };
 ```
 
