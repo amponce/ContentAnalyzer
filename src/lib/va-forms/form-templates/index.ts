@@ -26,10 +26,11 @@ function createGenericTemplate(formNumber: string): VAFormTemplate {
 
 export async function getFormTemplate(formNumber: string): Promise<VAFormTemplate> {
   // Always use a universal template that doesn't require predefined form structures
+  // This allows our system to work with ANY government form without specific hardcoding
   return createGenericTemplate(formNumber);
 }
 
 export async function loadAllTemplates(): Promise<void> {
-  // Templates are loaded statically for now
-  // In the future, this could load templates from a database or API
+  // Templates are loaded dynamically based on the form being processed
+  // No need to preload specific templates since we use AI-driven extraction
 } 

@@ -1,9 +1,8 @@
-import * as pdfjsLib from 'pdfjs-dist';
-import { PDFDocument } from 'pdf-lib';
+// Use types only in the import
+import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 
-// Properly set the worker source for Chrome extension environment
-// Chrome extensions need to use a local worker file due to CSP restrictions
-pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.js');
+// We'll initialize this when needed
+let pdfjs: typeof import('pdfjs-dist') | null = null;
 
 export interface PDFPage {
   pageNumber: number;
@@ -14,9 +13,22 @@ export interface PDFPage {
 
 export class PDFProcessor {
   /**
+   * Initializes PDF.js library
+   */
+  private async initPDFJS(): Promise<typeof import('pdfjs-dist')> {
+    if (!pdfjs) {
+      // Dynamically import the library
+      pdfjs = await import('pdfjs-dist');
+      // Properly set the worker source for Chrome extension environment
+      pdfjs.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.js');
+    }
+    return pdfjs;
+  }
+
+  /**
    * Convert a PDF page to an image
    */
-  private async convertPageToImage(page: pdfjsLib.PDFPageProxy, scale = 2): Promise<PDFPage> {
+  private async convertPageToImage(page: PDFPageProxy, scale = 2): Promise<PDFPage> {
     const viewport = page.getViewport({ scale });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
@@ -48,13 +60,16 @@ export class PDFProcessor {
     try {
       console.log('Starting PDF processing with PDF.js');
       
+      // Initialize PDF.js
+      const pdfjsLib = await this.initPDFJS();
+      
       // Set a timeout to avoid UI freezing
       const pdf = await Promise.race([
         pdfjsLib.getDocument({ data: pdfData }).promise,
         new Promise((_, reject) => 
           setTimeout(() => reject(new Error('PDF processing timed out')), 30000)
         )
-      ]) as pdfjsLib.PDFDocumentProxy;
+      ]) as PDFDocumentProxy;
       
       console.log(`PDF loaded successfully with ${pdf.numPages} pages`);
       const pages: PDFPage[] = [];
@@ -78,6 +93,9 @@ export class PDFProcessor {
    */
   async extractFormFields(pdfData: ArrayBuffer): Promise<any> {
     try {
+      // Dynamically import pdf-lib only when needed
+      const { PDFDocument } = await import('pdf-lib');
+      
       const pdfDoc = await PDFDocument.load(pdfData);
       const form = pdfDoc.getForm();
       const fields = form.getFields();

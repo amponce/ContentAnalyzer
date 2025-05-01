@@ -1,11 +1,35 @@
 import { FormProcessingResult, FormSummary, OCRResult } from './types';
 import { AI_MODELS } from '../constants/ai-models';
 
+// Common form fields that should be attempted to be extracted even if not explicitly found
+const COMMON_FORM_FIELDS = [
+  'fullName', 'firstName', 'lastName', 'middleName', 'middleInitial',
+  'address', 'streetAddress', 'city', 'state', 'zipCode', 'postalCode',
+  'phoneNumber', 'emailAddress', 'dateOfBirth', 'socialSecurityNumber',
+  'signature', 'signatureDate', 'dateOfApplication', 'applicantName',
+  // Additional fields for various government forms
+  'ein', 'taxID', 'businessName', 'employerName', 'employerAddress',
+  'accountNumber', 'licenseNumber', 'permitNumber', 'registrationNumber',
+  'policyNumber', 'claimNumber', 'fileNumber', 'referenceNumber'
+];
+
+// General form number detection patterns (works for various agencies)
+const FORM_PATTERNS = [
+  // Generic form patterns
+  /form\s*(?:no|number|#)?\s*[:\-]?\s*([a-z0-9\-\.]+)/i,
+  /form\s+([a-z0-9\-\.]+)/i,
+  
+  // Agency-specific patterns (but not assuming only one agency)
+  /([a-z]+)[\s\-]form[\s\-]([a-z0-9\-\.]+)/i, // Matches "VA Form 10-10EZ" or "IRS Form W-9"
+  /((?:va|irs|hud|ss|cms|dhs)\s*\d+[\-\.][a-z0-9\-\.]+)/i // Common agency prefixes
+];
+
 export class VAFormProcessor {
   private apiKey: string;
   private visionModel: string = AI_MODELS.VISION;  // gpt-4o-audio-preview for OCR
   private textModel: string = AI_MODELS.TEXT_PROCESSING;  // o4-mini for text processing
   private formModel: string = AI_MODELS.FORM_PROCESSING;  // gpt-4o for form understanding
+  private maxRetries: number = 2; // Number of retries for API calls
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
@@ -16,14 +40,72 @@ export class VAFormProcessor {
    */
   async processScannedForm(imageData: string): Promise<FormProcessingResult> {
     try {
+      console.log('Starting form processing...');
+      
       // First run OCR on the image using Vision model
       const ocrResults = await this.performOCR(imageData);
       
       // Get the combined OCR text
-      const ocrText = ocrResults.map(r => r.text).join(' ');
+      const ocrText = ocrResults.map(r => r.text).join('\n\n');
       
-      // Identify form type and extract all fields in a single AI call
-      const formInfo = await this.identifyAndExtractFields(ocrText);
+      // Try to identify form number directly from OCR text
+      const directFormInfo = this.extractFormInfoFromText(ocrText);
+      
+      if (!ocrText || ocrText.trim().length < 50) {
+        console.warn('OCR text is too short, might be insufficient for processing');
+        return {
+          formIdentified: !!directFormInfo.formNumber,
+          formNumber: directFormInfo.formNumber || 'UNKNOWN',
+          formTitle: directFormInfo.formTitle || 'OCR Failed - Text Extraction Incomplete',
+          fields: {},
+          rawOCR: ocrResults
+        };
+      }
+      
+      // Try to identify form type and extract fields (with retry mechanism)
+      let formInfo = null;
+      let attempts = 0;
+      let lastError = null;
+      
+      while (attempts < this.maxRetries + 1) {
+        try {
+          formInfo = await this.identifyAndExtractFields(ocrText);
+          
+          // If we found a form number directly from OCR but not from AI,
+          // use the direct form info
+          if (directFormInfo.formNumber && !formInfo.formNumber) {
+            formInfo.formNumber = directFormInfo.formNumber;
+            formInfo.formTitle = directFormInfo.formTitle || 'Government Form';
+          }
+          
+          // If we got at least some fields, break out of retry loop
+          if (Object.keys(formInfo.fields || {}).length > 0) {
+            break;
+          }
+          
+          // If no fields were extracted, try again with a different prompt strategy
+          console.log(`Retry ${attempts + 1}: No fields extracted, trying again with different approach`);
+          attempts++;
+        } catch (error) {
+          console.error(`Attempt ${attempts + 1} failed:`, error);
+          lastError = error;
+          attempts++;
+          // Small delay before retry
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      
+      if (!formInfo && lastError) {
+        throw lastError;
+      }
+      
+      if (!formInfo) {
+        formInfo = { 
+          formNumber: directFormInfo.formNumber || '', 
+          formTitle: directFormInfo.formTitle || '', 
+          fields: {} 
+        };
+      }
       
       // Transform the field data into the expected format - with null/undefined safety
       const fields = Object.entries(formInfo.fields || {}).reduce((acc, [key, value]) => {
@@ -50,10 +132,33 @@ export class VAFormProcessor {
       // Log successful field extraction
       console.log(`Extracted ${Object.keys(fields).length} fields from the form`);
       
+      // If we have a form number but very few fields, try to add some common empty fields
+      // to improve the form structure
+      if ((formInfo.formNumber || directFormInfo.formNumber) && Object.keys(fields).length < 10) {
+        console.log('Adding common fields to sparse form data...');
+        
+        // Add common fields to provide structure
+        COMMON_FORM_FIELDS.forEach(fieldName => {
+          if (!fields[fieldName]) {
+            fields[fieldName] = {
+              value: '',
+              confidence: 0.1 // Very low confidence since we're just providing structure
+            };
+          }
+        });
+      }
+      
+      // Determine the proper form number format
+      let formNumber = formInfo.formNumber || directFormInfo.formNumber;
+      if (formNumber) {
+        // Clean up spaces in form numbers
+        formNumber = formNumber.replace(/\s+/g, '-').trim();
+      }
+      
       return {
         formIdentified: formIdentified,
-        formNumber: formInfo.formNumber || (hasExtractedFields ? 'GENERIC' : 'UNKNOWN'),
-        formTitle: formInfo.formTitle || (hasExtractedFields ? 'Generic Form' : 'Unknown Form Type'),
+        formNumber: formNumber || (hasExtractedFields ? 'GENERIC' : 'UNKNOWN'),
+        formTitle: formInfo.formTitle || directFormInfo.formTitle || (hasExtractedFields ? 'Generic Form' : 'Unknown Form Type'),
         fields,
         rawOCR: ocrResults
       };
@@ -62,6 +167,8 @@ export class VAFormProcessor {
       // Return partial results if possible
       return {
         formIdentified: false,
+        formNumber: 'ERROR',
+        formTitle: 'Error Processing Form',
         fields: {},
         rawOCR: []
       };
@@ -69,113 +176,202 @@ export class VAFormProcessor {
   }
 
   /**
-   * Perform OCR on the image using Vision model
+   * Try to extract form number and title directly from OCR text
+   */
+  private extractFormInfoFromText(text: string): { formNumber: string; formTitle: string } {
+    let formNumber = '';
+    let formTitle = '';
+
+    // Try to find form title
+    const titleMatches = [
+      /APPLICATION\s+FOR\s+(.*?)(?:\n|$)/i,
+      /(?:DEPARTMENT|OFFICE|BUREAU)\s+OF\s+(.*?)(?:\n|$)/i,
+      /(?:^|\n)([^:\n]+?)\s+FORM(?:\s|\n|$)/i,
+      /FORM\s+.*?\n(.*?)(?:\n|$)/i
+    ];
+
+    for (const pattern of titleMatches) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        formTitle = match[1].trim();
+        break;
+      }
+    }
+
+    // Try to find form number using patterns
+    for (const pattern of FORM_PATTERNS) {
+      const match = text.match(pattern);
+      if (match) {
+        // Some patterns have multiple capture groups
+        formNumber = match[2] ? `${match[1]}-${match[2]}` : match[1];
+        formNumber = formNumber.trim();
+        break;
+      }
+    }
+
+    // Look for OMB form numbers as fallback
+    if (!formNumber) {
+      const ombMatch = text.match(/OMB.*?(\d+[\-\.]\d+)/i);
+      if (ombMatch && ombMatch[1]) {
+        formNumber = ombMatch[1].trim();
+      }
+    }
+
+    return { formNumber, formTitle };
+  }
+
+  /**
+   * Perform OCR on the image using Vision model with retry
    */
   private async performOCR(imageData: string): Promise<OCRResult[]> {
-    try {
-      console.log('Starting OCR processing...');
-      
-      // Validate the image data
-      if (!imageData || !imageData.startsWith('data:')) {
-        throw new Error('Invalid image data format');
-      }
-      
-      // Check image size
-      const approxSize = Math.round((imageData.length * 3) / 4);
-      console.log(`Approximate image size: ${Math.round(approxSize / 1024)} KB`);
-      
-      // Log OpenAI API call
-      console.log(`Calling OpenAI API with model: ${this.visionModel}`);
-      
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`
-        },
-        body: JSON.stringify({
-          model: this.visionModel,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are a document OCR system. Extract ALL text from the image, preserving layout when possible.'
-            },
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: 'Extract all text content from this form, including headers, field labels, and any filled-in information.'
-                },
-                {
-                  type: 'image_url',
-                  image_url: {
-                    url: imageData
-                  }
-                }
-              ]
-            }
-          ]
-        })
-      });
-
-      if (!response.ok) {
-        // Log error details
-        const errorText = await response.text().catch(() => 'No error text available');
-        console.error(`API Error Response: ${response.status} - ${response.statusText}`);
-        console.error(`Error details: ${errorText}`);
+    let attempts = 0;
+    let lastError = null;
+    
+    while (attempts < this.maxRetries + 1) {
+      try {
+        console.log(`OCR processing attempt ${attempts + 1}...`);
         
-        if (response.status === 400) {
-          throw new Error(`OCR request failed: The image may be too large or in an unsupported format. Try using a clearer image or reducing its size.`);
-        } else if (response.status === 401) {
-          throw new Error(`OCR request failed: Invalid API key. Please check your OpenAI API key in settings.`);
-        } else {
-          throw new Error(`OCR request failed: ${response.status} - ${response.statusText}`);
+        // Validate the image data
+        if (!imageData || !imageData.startsWith('data:')) {
+          throw new Error('Invalid image data format');
         }
-      }
+        
+        // Check image size
+        const approxSize = Math.round((imageData.length * 3) / 4);
+        console.log(`Approximate image size: ${Math.round(approxSize / 1024)} KB`);
+        
+        // Log OpenAI API call
+        console.log(`Calling OpenAI API with model: ${this.visionModel}`);
+        
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`
+          },
+          body: JSON.stringify({
+            model: this.visionModel,
+            messages: [
+              {
+                role: 'system',
+                content: `You are a document OCR system specialized in government forms of all types. Extract ALL text from the image, preserving layout and structure as much as possible. Pay special attention to:
+                1. Form numbers and titles
+                2. Field labels and their values
+                3. Any filled-in information
+                4. Checkboxes and their states (checked/unchecked)
+                5. Tables and structured data
+                
+                Include all visible text, even if it appears to be a header, footer, or instruction.`
+              },
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: 'This is a government form that needs to be digitized. Extract ALL text content, preserving the structure and relationships between field labels and values.'
+                  },
+                  {
+                    type: 'image_url',
+                    image_url: {
+                      url: imageData
+                    }
+                  }
+                ]
+              }
+            ]
+          })
+        });
 
-      const data = await response.json();
-      console.log('OCR processing completed successfully');
-      const extractedText = data.choices?.[0]?.message?.content || '';
-      
-      // Split the text into logical chunks for better processing
-      const textChunks = this.splitIntoLogicalChunks(extractedText);
-      console.log(`Extracted ${textChunks.length} text chunks from the document`);
-      
-      return textChunks.map((text, index) => ({
-        text,
-        confidence: 0.95,
-        // Add position information if available
-        boundingBox: {
-          x: 0,
-          y: index * 100, // Approximate vertical position
-          width: 1000,
-          height: 100
+        if (!response.ok) {
+          // Log error details
+          const errorText = await response.text().catch(() => 'No error text available');
+          console.error(`API Error Response: ${response.status} - ${response.statusText}`);
+          console.error(`Error details: ${errorText}`);
+          
+          // Throw specific errors based on response status
+          if (response.status === 400) {
+            throw new Error(`OCR request failed: The image may be too large or in an unsupported format. Try using a clearer image or reducing its size.`);
+          } else if (response.status === 401) {
+            throw new Error(`OCR request failed: Invalid API key. Please check your OpenAI API key in settings.`);
+          } else {
+            throw new Error(`OCR request failed: ${response.status} - ${response.statusText}`);
+          }
         }
-      }));
-    } catch (error) {
-      console.error("OCR failed:", error);
-      throw error;
+
+        const data = await response.json();
+        console.log('OCR processing completed successfully');
+        const extractedText = data.choices?.[0]?.message?.content || '';
+        
+        if (!extractedText || extractedText.trim().length < 50) {
+          console.warn('OCR produced too little text, trying again...');
+          attempts++;
+          continue;
+        }
+        
+        // Split the text into logical chunks for better processing
+        const textChunks = this.splitIntoLogicalChunks(extractedText);
+        console.log(`Extracted ${textChunks.length} text chunks from the document`);
+        
+        return textChunks.map((text, index) => ({
+          text,
+          confidence: 0.95,
+          // Add position information if available
+          boundingBox: {
+            x: 0,
+            y: index * 100, // Approximate vertical position
+            width: 1000,
+            height: 100
+          }
+        }));
+      } catch (error) {
+        console.error(`OCR attempt ${attempts + 1} failed:`, error);
+        lastError = error;
+        attempts++;
+        
+        // If we've hit our retry limit, throw the last error
+        if (attempts >= this.maxRetries + 1) {
+          throw lastError;
+        }
+        
+        // Small delay before retry
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
     }
+    
+    // This shouldn't be reached due to the throw in the loop, but TypeScript needs it
+    throw lastError;
   }
 
   /**
    * Split a large text into logical chunks for better processing
    */
   private splitIntoLogicalChunks(text: string): string[] {
-    // Split by double line breaks which often indicate section boundaries
-    let chunks = text.split(/\n\s*\n/);
+    // First try to preserve form structure by splitting on multiple line breaks
+    let chunks = text.split(/\n{3,}/);
     
-    // If we have very few chunks, try splitting by lines
+    // If we have very few chunks, try splitting by double line breaks
     if (chunks.length < 3) {
-      chunks = text.split(/\n/);
+      chunks = text.split(/\n\s*\n/);
+    }
+    
+    // If still few chunks, try single line breaks but group them intelligently
+    if (chunks.length < 3) {
+      const lines = text.split(/\n/);
       
       // Group chunks together to avoid too many small chunks
       const groupedChunks: string[] = [];
       let currentChunk = '';
       
-      chunks.forEach(line => {
-        if (currentChunk.length + line.length > 500) {
+      lines.forEach(line => {
+        // If this line looks like a section header, start a new chunk
+        if (/^[A-Z\s]{5,}:?$/.test(line.trim()) || /^[IVX]+\.\s+/.test(line.trim())) {
+          if (currentChunk) {
+            groupedChunks.push(currentChunk);
+          }
+          currentChunk = line;
+        }
+        // If current chunk is getting long, start a new one
+        else if (currentChunk.length + line.length > 750) {
           groupedChunks.push(currentChunk);
           currentChunk = line;
         } else {
@@ -187,10 +383,11 @@ export class VAFormProcessor {
         groupedChunks.push(currentChunk);
       }
       
-      return groupedChunks;
+      return groupedChunks.length > 1 ? groupedChunks : [text];
     }
     
-    return chunks;
+    // If we still have only one chunk, just return the whole text
+    return chunks.length > 1 ? chunks : [text];
   }
 
   /**
@@ -204,6 +401,33 @@ export class VAFormProcessor {
     try {
       console.log("Starting form field extraction using AI...");
       
+      // Look for specific form identifiers first
+      const directFormInfo = this.extractFormInfoFromText(text);
+      
+      // Check if this is a VA Form 5655
+      const isVAForm5655 = directFormInfo.formNumber?.includes('5655') || 
+                           text.includes('FINANCIAL STATUS REPORT') ||
+                           text.includes('VA FORM 5655');
+      
+      let formHint = '';
+      
+      if (isVAForm5655) {
+        formHint = `This is a VA Form 5655 (Financial Status Report). 
+This form has several important sections:
+- Section I: Personal Data (Social Security Number, Name, Address, Phone, Date of Birth, Marital Status)
+- Section II: Income
+- Section III: Expenses
+- Section IV: Discretionary Income
+- Section V: Assets
+- Section VI: Installment Contracts and Other Debts
+- Section VII: Additional Data
+- Section VIII: Applicant Certifications
+
+Pay close attention to these specific fields and organize them accordingly.`;
+      } else if (directFormInfo.formNumber) {
+        formHint = `This appears to be Form ${directFormInfo.formNumber}${directFormInfo.formTitle ? ` (${directFormInfo.formTitle})` : ''}. `;
+      }
+      
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -215,25 +439,41 @@ export class VAFormProcessor {
           messages: [
             {
               role: 'system',
-              content: `You are a form processing expert. Your task is to:
-              1. Identify the government form type and number if possible
-              2. Extract all key fields and their values from the form text
-              3. Return a structured JSON response
-              
-              Important:
-              - Even if you can't identify the exact form type, still extract ALL fields
-              - Set formNumber to "GENERIC" and formTitle to "Generic Form" if you can't determine them
-              - If a field value is missing or couldn't be determined, use an empty string, don't use null values
-              
-              For field extraction:
-              - Use camelCase IDs for field names (e.g., 'fullName', 'socialSecurityNumber')
-              - Extract ALL fields that appear to have values
-              - Include standard fields like name, address, phone, SSN, dates, etc.
-              - For checkboxes, return boolean true/false
-              - For dates, return MM/DD/YYYY format when possible
-              - For currency, return numeric values without $ or commas
-              - Do NOT include field labels in the values
-              - Do NOT make up information - if a field is not present, use empty string instead of null/undefined`
+              content: `You are a government form processing expert specializing in extracting structured data from any government form (VA, IRS, SSA, DMV, HUD, etc.). Your task is to:
+
+1. Identify the form type and number (if present)
+2. Extract ALL fields and their values from the OCR text
+3. Return a structured JSON response
+
+Important guidelines:
+- Identify form numbers in their original format (e.g., "VA Form 10-10EZ", "Form W-9", "DMV DL-44", "HUD-92900-A")
+- Extract ALL visible fields, including checkboxes, sections, and multi-part answers
+- For empty fields, use an empty string value
+- For checkboxes, determine if they're checked (true) or unchecked (false)
+- Use camelCase field names that accurately reflect the field labels
+- Include both exact form labels and their values
+- Use consistent field naming - if a field appears to be "Social Security Number", always use "socialSecurityNumber" as the key
+- Split complex fields into logical parts (e.g., break "Full Name" into "firstName", "middleName", "lastName")
+- For table data, use structured objects with appropriate naming
+- Don't include fields where you can't determine a clear label-value relationship
+
+${formHint}
+
+Your JSON response must follow this format:
+{
+  "formNumber": "5655", // The form number, or "GENERIC" if unknown
+  "formTitle": "Financial Status Report", // The exact form title
+  "fields": {
+    "socialSecurityNumber": "123-45-6789",
+    "fileNumber": "ABC123",
+    "firstName": "John",
+    "middleName": "David",
+    "lastName": "Smith",
+    "dateOfBirth": "01/01/1980",
+    "phoneNumber": "(555) 123-4567",
+    // ... all other identified fields with their values
+  }
+}`
             },
             {
               role: 'user',
@@ -266,26 +506,57 @@ export class VAFormProcessor {
         // Handle malformed responses
         if (!parsedResult) {
           console.error('Parsed result is null or undefined');
-          return { formNumber: '', formTitle: '', fields: {} };
+          return { 
+            formNumber: directFormInfo.formNumber || '', 
+            formTitle: directFormInfo.formTitle || '', 
+            fields: {} 
+          };
         }
         
-        // Sanitize fields object
-        const sanitizedFields = parsedResult.fields || {};
+        // Clean up complex fields that might be objects or arrays
+        const sanitizedFields = { ...parsedResult.fields || {} };
+        Object.keys(sanitizedFields).forEach(key => {
+          const value = sanitizedFields[key];
+          if (value === "[object Object]") {
+            sanitizedFields[key] = '';
+          } else if (typeof value === 'object' && value !== null) {
+            try {
+              // Stringify objects so they can be displayed
+              sanitizedFields[key] = JSON.stringify(value);
+            } catch (err) {
+              sanitizedFields[key] = '';
+            }
+          }
+        });
+        
+        // If this is VA Form 5655, ensure we use the correct form title
+        if (isVAForm5655) {
+          parsedResult.formNumber = parsedResult.formNumber || '5655';
+          parsedResult.formTitle = parsedResult.formTitle || 'Financial Status Report';
+        }
+        
+        // If the AI didn't find a form number but we found one directly, use ours
+        const formNumber = parsedResult.formNumber || directFormInfo.formNumber || '';
+        const formTitle = parsedResult.formTitle || directFormInfo.formTitle || '';
         
         // Log fields for debugging
-        console.log(`Form number identified: ${parsedResult.formNumber || 'Unknown'}`);
-        console.log(`Form title identified: ${parsedResult.formTitle || 'Unknown'}`);
+        console.log(`Form number identified: ${formNumber || 'Unknown'}`);
+        console.log(`Form title identified: ${formTitle || 'Unknown'}`);
         console.log(`Number of fields extracted: ${Object.keys(sanitizedFields).length}`);
         
         return {
-          formNumber: parsedResult.formNumber || '',
-          formTitle: parsedResult.formTitle || '',
+          formNumber: formNumber,
+          formTitle: formTitle,
           fields: sanitizedFields
         };
       } catch (error) {
         console.error('Failed to parse form analysis response:', error);
-        // Return empty data instead of throwing
-        return { formNumber: '', formTitle: '', fields: {} };
+        // Return direct form info if available
+        return { 
+          formNumber: directFormInfo.formNumber || '', 
+          formTitle: directFormInfo.formTitle || '', 
+          fields: {} 
+        };
       }
     } catch (error) {
       console.error('Form identification and extraction failed:', error);
@@ -310,7 +581,7 @@ export class VAFormProcessor {
           messages: [
             {
               role: 'system',
-              content: `You are a form analysis expert. Review the form data and provide a summary with key findings and recommendations.
+              content: `You are a government form analysis expert. Review the form data and provide a summary with key findings and recommendations.
 
 For any form, even if you don't recognize its specific type:
 1. Analyze all extracted fields and their values
@@ -371,22 +642,161 @@ Return a JSON object with:
    * Create a digital version of the form
    */
   async createDigitalForm(result: FormProcessingResult): Promise<any> {
-    // Create a simple structure with the form data
-    return {
-      formNumber: result.formNumber,
-      formTitle: result.formTitle,
-      dateScanned: new Date().toISOString(),
-      fields: Object.entries(result.fields).map(([id, data]) => ({
-        id,
-        label: this.formatFieldLabel(id),
-        value: data.value,
-        type: this.inferFieldType(id, data.value)
-      })),
-      sections: [{
-        title: 'Form Data',
-        fields: Object.keys(result.fields)
-      }]
-    };
+    try {
+      // Use a dynamic approach that works with ANY government form
+      let groupedSections = [];
+      
+      // Group fields by logical categories based on field content
+      const fieldIds = Object.keys(result.fields);
+      
+      // Create field mappings to categorize fields
+      const fieldCategories: {[category: string]: string[]} = {
+        'Personal Information': [
+          'name', 'ssn', 'social', 'security', 'birth', 'dob', 'gender', 'sex',
+          'marital', 'spouse', 'dependents', 'age'
+        ],
+        'Contact Information': [
+          'address', 'street', 'city', 'state', 'zip', 'postal', 'phone', 
+          'telephone', 'email', 'fax', 'contact'
+        ],
+        'Employment Information': [
+          'employ', 'job', 'occupation', 'work', 'position', 'title', 'salary',
+          'income', 'earnings', 'wage', 'company', 'business', 'profession'
+        ],
+        'Financial Information': [
+          'income', 'salary', 'wage', 'earnings', 'expense', 'payment', 'cost',
+          'financial', 'money', 'pay', 'deduction', 'tax', 'net', 'gross', 'total'
+        ],
+        'Asset Information': [
+          'asset', 'property', 'own', 'value', 'worth', 'saving', 'account', 'bank',
+          'cash', 'investment', 'stock', 'bond', 'fund', 'real estate', 'vehicle', 'car'
+        ],
+        'Debt Information': [
+          'debt', 'loan', 'credit', 'owe', 'payment', 'monthly payment', 'balance',
+          'creditor', 'installment', 'finance', 'liability', 'obligation'
+        ],
+        'Medical Information': [
+          'health', 'medical', 'condition', 'disability', 'treatment', 'diagnosis',
+          'doctor', 'hospital', 'care', 'insurance', 'symptom', 'medication'
+        ],
+        'Military/Service Information': [
+          'military', 'service', 'veteran', 'branch', 'army', 'navy', 'marine',
+          'air force', 'discharge', 'duty', 'rank', 'served'
+        ],
+        'Document Information': [
+          'form', 'document', 'application', 'signature', 'sign', 'date', 'complete',
+          'submit', 'file', 'number', 'reference', 'id', 'identification'
+        ]
+      };
+      
+      // Create empty groups for each category
+      const groupedFields: {[group: string]: string[]} = {};
+      Object.keys(fieldCategories).forEach(category => {
+        groupedFields[category] = [];
+      });
+      
+      // Add a catch-all category
+      groupedFields['Other Information'] = [];
+      
+      // Sort each field into the appropriate category
+      fieldIds.forEach(fieldId => {
+        const fieldName = fieldId.toLowerCase();
+        const fieldLabel = this.formatFieldLabel(fieldId).toLowerCase();
+        
+        // Try to find matching category
+        let assigned = false;
+        for (const [category, keywords] of Object.entries(fieldCategories)) {
+          if (keywords.some(keyword => 
+            fieldName.includes(keyword) || fieldLabel.includes(keyword)
+          )) {
+            groupedFields[category].push(fieldId);
+            assigned = true;
+            break;
+          }
+        }
+        
+        // If not assigned to any specific category, add to Other Information
+        if (!assigned) {
+          groupedFields['Other Information'].push(fieldId);
+        }
+      });
+      
+      // Remove empty groups
+      Object.keys(groupedFields).forEach(group => {
+        if (groupedFields[group].length === 0) {
+          delete groupedFields[group];
+        }
+      });
+      
+      // Ensure we have at least one group
+      if (Object.keys(groupedFields).length === 0) {
+        groupedFields['Form Data'] = fieldIds;
+      }
+      
+      // Create sections from our dynamically assigned groups
+      groupedSections = Object.entries(groupedFields).map(([title, fields]) => ({
+        title,
+        fields
+      }));
+      
+      // Prepare fields with types
+      const processedFields = Object.entries(result.fields).map(([id, data]) => {
+        let fieldValue = data.value;
+        let fieldType = 'text';
+        
+        // Handle objects and arrays that might have been stringified
+        try {
+          if (typeof fieldValue === 'string' && 
+              (fieldValue.startsWith('{') || fieldValue.startsWith('['))) {
+            // Try to parse as JSON
+            const parsed = JSON.parse(fieldValue);
+            if (typeof parsed === 'object' && parsed !== null) {
+              // Keep as string but with proper formatting
+              fieldValue = JSON.stringify(parsed);
+            }
+          }
+        } catch (e) {
+          // Not JSON, keep as is
+        }
+        
+        // Infer field type
+        fieldType = this.inferFieldType(id, String(fieldValue));
+        
+        return {
+          id,
+          label: this.formatFieldLabel(id),
+          value: String(fieldValue),
+          type: fieldType
+        };
+      });
+      
+      // Create a digital form representation
+      return {
+        formNumber: result.formNumber || 'UNKNOWN',
+        formTitle: result.formTitle || 'Generic Form',
+        dateScanned: new Date().toISOString(),
+        fields: processedFields,
+        sections: groupedSections
+      };
+    } catch (error) {
+      console.error('Error creating digital form:', error);
+      // Fallback to a simple structure
+      return {
+        formNumber: result.formNumber || 'UNKNOWN',
+        formTitle: result.formTitle || 'Generic Form',
+        dateScanned: new Date().toISOString(),
+        fields: Object.entries(result.fields).map(([id, data]) => ({
+          id,
+          label: this.formatFieldLabel(id),
+          value: String(data.value),
+          type: 'text'
+        })),
+        sections: [{
+          title: 'Form Data',
+          fields: Object.keys(result.fields)
+        }]
+      };
+    }
   }
 
   /**
@@ -401,7 +811,9 @@ Return a JSON object with:
       // Fix specific acronyms
       .replace(' S S N', ' SSN')
       .replace(' D O B', ' DOB')
-      .replace(' V A', ' VA');
+      .replace(' V A', ' VA')
+      .replace(' I R S', ' IRS')
+      .replace(' D M V', ' DMV');
   }
 
   /**
@@ -416,6 +828,11 @@ Return a JSON object with:
     // Check for date fields
     if (id.toLowerCase().includes('date') || /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(value)) {
       return 'date';
+    }
+    
+    // Check for longer text that might need a textarea
+    if (value.length > 100 || id.toLowerCase().includes('comment') || id.toLowerCase().includes('description')) {
+      return 'textarea';
     }
     
     // Check for number-only fields

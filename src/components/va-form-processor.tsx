@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2, Download, CheckCircle, AlertCircle, Edit, Save, FileWarning } from "lucide-react";
+import { Loader2, CheckCircle, AlertCircle, FileWarning, ExternalLink, FileText, ChevronRight } from "lucide-react";
 import { VAFormProcessor as FormProcessor } from '@/lib/va-forms/form-processor';
 import { PDFProcessor } from '@/lib/pdf-processor';
 import type { FormProcessingResult, FormSummary } from '@/lib/va-forms/types';
@@ -14,10 +14,12 @@ export function VAFormProcessorComponent() {
   const [result, setResult] = useState<FormProcessingResult | null>(null);
   const [summary, setSummary] = useState<FormSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [editMode, setEditMode] = useState(false);
   const [formData, setFormData] = useState<{[key: string]: string}>({});
   const pdfProcessor = new PDFProcessor();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [processingPages, setProcessingPages] = useState<number>(0);
+  const [totalPages, setTotalPages] = useState<number>(0);
+  const [processingPageIndex, setProcessingPageIndex] = useState<number>(0);
 
   const isPDF = (file: File) => {
     return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
@@ -27,41 +29,46 @@ export function VAFormProcessorComponent() {
     return file.type.startsWith('image/');
   };
 
-  const convertPDFToImage = async (pdfFile: File): Promise<string> => {
+  const convertPDFToImage = async (pdfFile: File): Promise<string[]> => {
     try {
       const buffer = await pdfFile.arrayBuffer();
-      console.log('Converting PDF to image...');
+      console.log('Converting PDF to images...');
       
       try {
         const pages = await pdfProcessor.processPDF(buffer);
         
         if (pages.length === 0) {
           console.warn('No pages found in PDF, trying fallback method');
-          return await convertPDFUsingBrowser(pdfFile);
+          return [await convertPDFUsingBrowser(pdfFile)];
         }
         
-        // For now, we'll just use the first page
-        // TODO: Add support for multi-page forms if needed
+        // We'll process all pages
+        setTotalPages(pages.length);
         
-        // Check if the image is too large for API processing
-        let imageData = pages[0].imageData;
-        const sizeInKB = Math.round((imageData.length * 3) / 4 / 1024);
-        console.log(`Original PDF image size: ~${sizeInKB} KB`);
+        // Check if the images are too large for API processing
+        const processedImages = await Promise.all(pages.map(async (page, index) => {
+          setProcessingPageIndex(index);
+          let imageData = page.imageData;
+          const sizeInKB = Math.round((imageData.length * 3) / 4 / 1024);
+          console.log(`Page ${index + 1} image size: ~${sizeInKB} KB`);
+          
+          // If image is too large, resize it using the canvas
+          if (sizeInKB > 10000) { // 10MB is big for API processing
+            console.log(`Page ${index + 1} is large, reducing size to avoid API limits...`);
+            imageData = await reduceImageSize(imageData, 0.7); // Reduce quality
+          }
+          
+          return imageData;
+        }));
         
-        // If image is too large, resize it using the canvas
-        if (sizeInKB > 10000) { // 10MB is big for API processing
-          console.log('Image is large, reducing size to avoid API limits...');
-          imageData = await reduceImageSize(imageData, 0.7); // Reduce quality
-        }
-        
-        return imageData;
+        return processedImages;
       } catch (processingError) {
         // Log the actual error for debugging
         console.error('Detailed PDF processing error:', processingError);
         
         // Try fallback method immediately if PDF.js processing fails
         console.log('Using fallback PDF rendering method...');
-        return await convertPDFUsingBrowser(pdfFile);
+        return [await convertPDFUsingBrowser(pdfFile)];
       }
     } catch (error) {
       // This is a catastrophic error where even the fallback failed
@@ -223,51 +230,136 @@ export function VAFormProcessorComponent() {
         throw new Error('Please configure your OpenAI API key in the settings first');
       }
 
-      let imageData: string;
+      let imageDataArray: string[] = [];
+      let processingAttempts = 0;
+      const maxAttempts = 2;
       
       try {
         if (isPDF(file)) {
-          imageData = await convertPDFToImage(file);
+          // Process all pages of the PDF
+          imageDataArray = await convertPDFToImage(file);
+          setProcessingPages(imageDataArray.length);
         } else {
-          // Handle image file
-          imageData = await new Promise((resolve, reject) => {
+          // Handle image file (single page)
+          setProcessingPages(1);
+          setTotalPages(1);
+          const imageData = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = (e) => resolve(e.target?.result as string);
             reader.onerror = () => reject(new Error('Failed to read the image file. Please try again.'));
             reader.readAsDataURL(file);
           });
+          imageDataArray = [imageData];
         }
 
         const processor = new FormProcessor(apiKey);
-        const processingResult = await processor.processScannedForm(imageData);
         
-        // IMPORTANT: Always consider the form identified if it has ANY fields
-        const hasFields = Object.keys(processingResult.fields).length > 0;
+        // Process each page separately and merge results
+        let combinedResult: FormProcessingResult = {
+          formIdentified: false,
+          formNumber: '',
+          formTitle: '',
+          fields: {},
+          rawOCR: []
+        };
         
-        if (hasFields) {
-          // If any fields were extracted, consider it identified
-          processingResult.formIdentified = true;
-          
-          // Only set generic info if no form number was found
-          if (!processingResult.formNumber) {
-            processingResult.formNumber = 'GENERIC';
-            processingResult.formTitle = 'Generic Form';
+        // First, let's identify the form from the first page
+        const firstPageResult = await processor.processScannedForm(imageDataArray[0]);
+        combinedResult.formNumber = firstPageResult.formNumber;
+        combinedResult.formTitle = firstPageResult.formTitle;
+        combinedResult.formIdentified = firstPageResult.formIdentified;
+        combinedResult.fields = {...firstPageResult.fields};
+        combinedResult.rawOCR = [...firstPageResult.rawOCR];
+        
+        // Now process the remaining pages and merge fields
+        if (imageDataArray.length > 1) {
+          for (let i = 1; i < imageDataArray.length; i++) {
+            setProcessingPageIndex(i);
+            console.log(`Processing page ${i + 1} of ${imageDataArray.length}...`);
+            
+            const pageResult = await processor.processScannedForm(imageDataArray[i]);
+            
+            // Merge fields from this page into the combined result
+            combinedResult.fields = {...combinedResult.fields, ...pageResult.fields};
+            combinedResult.rawOCR = [...combinedResult.rawOCR, ...pageResult.rawOCR];
           }
         }
         
-        setResult(processingResult);
-
-        if (processingResult.formIdentified) {
-          const formSummary = await processor.generateFormSummary(processingResult);
-          setSummary(formSummary);
+        // If we still don't have a valid form number/title, retry once more with the entire document
+        if ((!combinedResult.formNumber || combinedResult.formNumber === 'GENERIC') && 
+            processingAttempts < maxAttempts && imageDataArray.length > 0) {
+          console.log("Retrying form identification with first page...");
+          processingAttempts++;
+          const retryResult = await processor.processScannedForm(imageDataArray[0]);
+          if (retryResult.formNumber && retryResult.formNumber !== 'GENERIC') {
+            combinedResult.formNumber = retryResult.formNumber;
+            combinedResult.formTitle = retryResult.formTitle;
+          }
+        }
+        
+        // IMPORTANT: Always consider the form identified if it has ANY fields or if a form number was detected
+        const hasFields = Object.keys(combinedResult.fields).length > 0;
+        const hasFormNumber = !!combinedResult.formNumber && 
+                             combinedResult.formNumber !== 'UNKNOWN' && 
+                             combinedResult.formNumber !== 'ERROR';
+        
+        if (hasFields || hasFormNumber) {
+          // If any fields were extracted or a form number was found, consider it identified
+          combinedResult.formIdentified = true;
           
-          setFormData(Object.entries(processingResult.fields).reduce((acc, [key, field]) => ({
+          // Only set generic info if no form number was found
+          if (!combinedResult.formNumber || 
+              combinedResult.formNumber === 'UNKNOWN' || 
+              combinedResult.formNumber === 'ERROR') {
+            combinedResult.formNumber = 'GENERIC';
+            combinedResult.formTitle = 'Generic Form';
+          }
+          
+          // Add placeholder fields for common form fields if they're missing
+          // This ensures the form structure is more complete
+          const commonFields = [
+            'fullName', 'firstName', 'lastName', 'socialSecurityNumber', 
+            'dateOfBirth', 'address', 'phoneNumber', 'emailAddress',
+            'veteranName', 'signature', 'signatureDate'
+          ];
+          
+          commonFields.forEach(field => {
+            if (!combinedResult.fields[field]) {
+              // Add empty field with low confidence
+              combinedResult.fields[field] = {
+                value: '',
+                confidence: 0.1
+              };
+            }
+          });
+        }
+        
+        setResult(combinedResult);
+
+        if (combinedResult.formIdentified) {
+          try {
+            const formSummary = await processor.generateFormSummary(combinedResult);
+            setSummary(formSummary);
+          } catch (summaryError) {
+            console.error("Error generating form summary:", summaryError);
+            // Create a basic summary if the API call fails
+            setSummary({
+              formNumber: combinedResult.formNumber || 'UNKNOWN',
+              formTitle: combinedResult.formTitle || 'Unknown Form Type',
+              keyFindings: ["Form was processed but detailed analysis failed"],
+              missingRequired: ["Form may have missing required fields"],
+              recommendations: ["Verify all information is correct", "Consider re-processing the form with a clearer image"],
+              digitalFormUrl: ""
+            });
+          }
+          
+          setFormData(Object.entries(combinedResult.fields).reduce((acc, [key, field]) => ({
             ...acc,
             [key]: field.value
           }), {}));
         } else {
           // This now only happens if NO fields were extracted at all
-          setError('No form fields were detected. Please make sure you uploaded a valid form document.');
+          setError('No form fields were detected. Please make sure you uploaded a valid form document. Try using a clearer image or a different file format.');
         }
       } catch (err) {
         if (err instanceof Error) {
@@ -281,17 +373,13 @@ export function VAFormProcessorComponent() {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setProcessing(false);
+      setProcessingPageIndex(0);
+      setProcessingPages(0);
+      setTotalPages(0);
     }
   };
 
-  const handleFieldChange = (fieldId: string, value: string) => {
-    setFormData(prev => ({
-      ...prev,
-      [fieldId]: value
-    }));
-  };
-
-  const handleSaveForm = async () => {
+  const handleOpenInWindow = async () => {
     if (!result) return;
 
     try {
@@ -308,157 +396,26 @@ export function VAFormProcessorComponent() {
         }), {})
       });
 
-      // Download the form as JSON
-      const blob = new Blob([JSON.stringify(digitalForm, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${result.formNumber || 'va-form'}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      setEditMode(false);
+      // Send message to background script to open a new window
+      chrome.runtime.sendMessage(
+        { 
+          action: "openFormViewer", 
+          formData: digitalForm
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            console.error('Error sending message:', chrome.runtime.lastError);
+            setError('Failed to open form in new window');
+          } else if (!response.success) {
+            setError(response.error || 'Failed to open form in new window');
+          }
+          setProcessing(false);
+        }
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save form');
-    } finally {
+      setError(err instanceof Error ? err.message : 'Failed to open form in new window');
       setProcessing(false);
     }
-  };
-
-  // Helper function to infer field type from field name
-  const inferFieldType = (fieldId: string, value: string): 'text' | 'checkbox' | 'date' | 'select' => {
-    // Date fields
-    if (fieldId.toLowerCase().includes('date') || /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(value)) {
-      return 'date';
-    }
-    
-    // Boolean fields
-    if (value === 'true' || value === 'false') {
-      return 'checkbox';
-    }
-    
-    // Default to text
-    return 'text';
-  };
-  
-  // Helper function to format field labels
-  const formatFieldLabel = (fieldId: string): string => {
-    return fieldId
-      // Insert a space before all uppercase letters
-      .replace(/([A-Z])/g, ' $1')
-      // Replace first character with uppercase
-      .replace(/^./, str => str.toUpperCase())
-      // Fix specific acronyms
-      .replace(' S S N', ' SSN')
-      .replace(' D O B', ' DOB')
-      .replace(' V A', ' VA');
-  };
-
-  // Updated render method for dynamic fields
-  const renderDynamicFields = () => {
-    if (!result || !formData) return null;
-    
-    // Group fields by categories based on field names
-    const fieldGroups: {[group: string]: string[]} = {
-      'Personal Information': [],
-      'Contact Information': [],
-      'Service Information': [],
-      'Medical Information': [],
-      'Financial Information': [],
-      'Other Information': []
-    };
-    
-    // Sort fields into categories
-    const fieldIds = Object.keys(formData);
-    fieldIds.forEach(fieldId => {
-      const lowerFieldId = fieldId.toLowerCase();
-      
-      if (lowerFieldId.includes('name') || lowerFieldId.includes('ssn') || 
-          lowerFieldId.includes('birth') || lowerFieldId.includes('gender')) {
-        fieldGroups['Personal Information'].push(fieldId);
-      }
-      else if (lowerFieldId.includes('address') || lowerFieldId.includes('city') || 
-               lowerFieldId.includes('state') || lowerFieldId.includes('zip') || 
-               lowerFieldId.includes('phone') || lowerFieldId.includes('email')) {
-        fieldGroups['Contact Information'].push(fieldId);
-      }
-      else if (lowerFieldId.includes('service') || lowerFieldId.includes('military') || 
-               lowerFieldId.includes('branch') || lowerFieldId.includes('discharge')) {
-        fieldGroups['Service Information'].push(fieldId);
-      }
-      else if (lowerFieldId.includes('medical') || lowerFieldId.includes('health') || 
-               lowerFieldId.includes('disability') || lowerFieldId.includes('condition')) {
-        fieldGroups['Medical Information'].push(fieldId);
-      }
-      else if (lowerFieldId.includes('income') || lowerFieldId.includes('expense') || 
-               lowerFieldId.includes('financial') || lowerFieldId.includes('payment') ||
-               lowerFieldId.includes('amount') || lowerFieldId.includes('cost')) {
-        fieldGroups['Financial Information'].push(fieldId);
-      }
-      else {
-        fieldGroups['Other Information'].push(fieldId);
-      }
-    });
-    
-    // Render each group that has fields
-    return (
-      <div className="space-y-6">
-        {Object.entries(fieldGroups).map(([groupName, groupFields]) => {
-          if (groupFields.length === 0) return null;
-          
-          return (
-            <div key={groupName} className="space-y-4">
-              <h4 className="font-medium text-gray-700">{groupName}</h4>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {groupFields.map(fieldId => {
-                  const value = formData[fieldId] || '';
-                  const fieldType = inferFieldType(fieldId, value);
-                  const label = formatFieldLabel(fieldId);
-                  
-                  return (
-                    <div key={fieldId} className="space-y-1">
-                      <Label htmlFor={fieldId} className="text-sm font-medium">
-                        {label}
-                      </Label>
-                      {fieldType === 'checkbox' ? (
-                        <input
-                          type="checkbox"
-                          id={fieldId}
-                          checked={value === 'true'}
-                          onChange={(e) => handleFieldChange(fieldId, e.target.checked.toString())}
-                          disabled={!editMode}
-                          className="h-4 w-4 rounded border-gray-300"
-                        />
-                      ) : fieldType === 'date' ? (
-                        <input
-                          type="date"
-                          id={fieldId}
-                          value={value}
-                          onChange={(e) => handleFieldChange(fieldId, e.target.value)}
-                          disabled={!editMode}
-                          className="w-full p-2 border rounded-md disabled:bg-gray-100"
-                        />
-                      ) : (
-                        <input
-                          type="text"
-                          id={fieldId}
-                          value={value}
-                          onChange={(e) => handleFieldChange(fieldId, e.target.value)}
-                          disabled={!editMode}
-                          className="w-full p-2 border rounded-md disabled:bg-gray-100"
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
   };
 
   return (
@@ -468,11 +425,11 @@ export function VAFormProcessorComponent() {
       
       <Card>
         <CardHeader>
-          <CardTitle>VA Form Processor</CardTitle>
+          <CardTitle>Document Processor</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid w-full max-w-sm items-center gap-1.5">
-            <Label htmlFor="form-upload">Upload VA Form (PDF or Image)</Label>
+            <Label htmlFor="form-upload">Upload Form (PDF or Image)</Label>
             <Input
               id="form-upload"
               type="file"
@@ -503,7 +460,11 @@ export function VAFormProcessorComponent() {
             {processing ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                {file && isPDF(file) ? 'Converting PDF and Processing Form...' : 'Processing Form...'}
+                {processingPages > 0 ? (
+                  `Processing page ${processingPageIndex + 1} of ${totalPages > 0 ? totalPages : '?'}`
+                ) : (
+                  file && isPDF(file) ? 'Converting PDF and Processing Form...' : 'Processing Form...'
+                )}
               </>
             ) : (
               <>
@@ -555,6 +516,20 @@ export function VAFormProcessorComponent() {
                 </div>
                 <p className="text-sm">Form Number: {result.formNumber}</p>
                 <p className="text-sm">Form Title: {result.formTitle}</p>
+                <p className="text-sm mt-2">
+                  {Object.keys(result.fields).length} fields detected across {result.rawOCR.length} form sections
+                </p>
+
+                {/* Open in Larger Window Button */}
+                <Button
+                  variant="default"
+                  onClick={handleOpenInWindow}
+                  disabled={processing}
+                  className="w-full mt-4 bg-blue-600 hover:bg-blue-700"
+                >
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  View Form in Larger Window
+                </Button>
               </div>
 
               {/* Missing Required Fields Warning */}
@@ -572,44 +547,25 @@ export function VAFormProcessorComponent() {
                 </div>
               )}
 
-              {/* Form Fields */}
-              <div className="border rounded-lg p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-semibold">Extracted Form Data</h3>
-                  <Button
-                    variant={editMode ? "default" : "outline"}
-                    onClick={() => setEditMode(!editMode)}
-                    disabled={processing}
+              {/* Digital Form Link */}
+              {summary.digitalFormUrl && (
+                <div className="border rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <FileText className="h-5 w-5 text-blue-600" />
+                    <h3 className="font-semibold">Digital Version Available</h3>
+                  </div>
+                  <p className="text-sm mb-3">Complete this form online for better accuracy:</p>
+                  <a 
+                    href={summary.digitalFormUrl} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="flex items-center text-blue-600 hover:text-blue-800 text-sm"
                   >
-                    <Edit className="h-4 w-4 mr-2" />
-                    {editMode ? 'Editing...' : 'Edit Fields'}
-                  </Button>
+                    <span>Open official digital form</span>
+                    <ChevronRight className="h-4 w-4 ml-1" />
+                  </a>
                 </div>
-
-                {/* Render dynamic fields instead of static field lists */}
-                {renderDynamicFields()}
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex gap-2 justify-end">
-                {editMode && (
-                  <Button
-                    onClick={handleSaveForm}
-                    disabled={processing}
-                  >
-                    <Save className="h-4 w-4 mr-2" />
-                    Save Changes
-                  </Button>
-                )}
-                <Button
-                  variant="outline"
-                  onClick={() => window.open(summary.digitalFormUrl)}
-                  disabled={!summary.digitalFormUrl}
-                >
-                  <Download className="h-4 w-4 mr-2" />
-                  Download Original Form
-                </Button>
-              </div>
+              )}
             </div>
           )}
         </CardContent>

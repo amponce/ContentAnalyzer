@@ -173,6 +173,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     return true;
   }
+  
+  if (message.action === "openFormViewer") {
+    try {
+      // Encode the form data to pass it as a URL parameter
+      const encodedFormData = encodeURIComponent(JSON.stringify(message.formData));
+      
+      // Use fixed dimensions instead of relying on window.screen
+      // Chrome extension service workers don't have access to the window object
+      
+      // Create a larger window with the form viewer
+      chrome.windows.create({
+        url: chrome.runtime.getURL(`form-viewer.html?formData=${encodedFormData}`),
+        type: 'popup',
+        width: 1200,
+        height: 900,
+        left: 100,  // Fixed left position
+        top: 50     // Fixed top position
+      }, (window) => {
+        if (chrome.runtime.lastError) {
+          console.error('Error opening form viewer window:', chrome.runtime.lastError);
+          sendResponse({ 
+            success: false, 
+            error: chrome.runtime.lastError.message 
+          });
+        } else {
+          sendResponse({ success: true, windowId: window?.id });
+        }
+      });
+      
+      return true; // Required for async response
+    } catch (error) {
+      console.error('Error opening form viewer:', error);
+      sendResponse({ 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to open form viewer' 
+      });
+      return true;
+    }
+  }
 });
 
 // Core sentiment analysis function
@@ -208,14 +247,13 @@ async function analyzeSentiment(text: string, chunkIndex?: number, totalChunks?:
           {
             role: "system",
             content: `You are a sentiment analyzer specializing in social media content and user feedback. Analyze the sentiment of the given text and provide a clear, concise analysis.
-
-Your response should be a simple JSON object containing:
-{
-  "sentiment": "positive" | "negative" | "neutral",
-  "confidence": number between 0 and 1,
-  "themes": ["main topic/theme"],
-  "summary": "brief summary of the content"
-}`
+            Your response should be a simple JSON object containing:
+            {
+              "sentiment": "positive" | "negative" | "neutral",
+              "confidence": number between 0 and 1,
+              "themes": ["main topic/theme"],
+              "summary": "brief summary of the content"
+            }`
           },
           {
             role: "user",

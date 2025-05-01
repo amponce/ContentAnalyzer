@@ -23,7 +23,7 @@ export interface VAFormTemplate {
   formTitle: string;
   sections: {
     title: string;
-    fields: VAFormField[];
+    fields: string[]; // Changed to string[] to support dynamic field IDs
   }[];
   fieldExtractors: {
     [fieldId: string]: {

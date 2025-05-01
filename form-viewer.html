@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Form Viewer - Content Analyzer</title>
+  <meta name="description" content="View and edit processed government forms in a larger window">
+  <meta name="theme-color" content="#1a365d">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    #loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      background-color: #f9fafb;
+      color: #1a365d;
+    }
+    .loading-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(26, 54, 93, 0.2);
+      border-radius: 50%;
+      border-top-color: #1a365d;
+      animation: spin 1s ease-in-out infinite;
+      margin-bottom: 16px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .loading-text {
+      font-size: 18px;
+      font-weight: 500;
+      margin-bottom: 8px;
+    }
+    .loading-subtext {
+      font-size: 14px;
+      color: #64748b;
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="loading">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Loading form data...</div>
+      <div class="loading-subtext">Please wait while we prepare your form</div>
+    </div>
+  </div>
+  <script type="module" src="/src/form-viewer.tsx"></script>
+</body>
+</html> 
