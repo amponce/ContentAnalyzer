@@ -453,13 +453,17 @@ Pay close attention to these specific fields and organize them accordingly.`;
 4. Group fields precisely as they appear in the original form
 5. Return a structured JSON response
 
-Important guidelines:
-- Preserve the exact original form structure, sections, and fields
-- Capture form structure in the sections array, matching the original document's organization
-- Group related fields exactly as they are grouped in the original form (e.g., keep address fields together including county)
-- Keep field names consistent with the original form labels
+CRITICAL INSTRUCTIONS FOR FIELD GROUPING:
+- You MUST preserve the EXACT ORIGINAL form structure and field relationships
+- Always keep fields in the same sections they appear in the original form
+- Address fields (including city, state, zip, AND COUNTY) must stay grouped together in the same section
+- Never move fields between sections - respect the original document organization
+- Field order within sections should match the original form layout
+- Field names should be consistent with original form labels
+- Never categorize fields based on your own assumptions - only use the sections defined in the form
+
+Additional guidelines:
 - Extract ALL visible fields, including checkboxes, sections, and multi-part answers
-- Preserve the order of fields and sections from the original document
 - For date fields, provide the date in a simple format that doesn't require calendar navigation
 - For name fields, respect the original form structure (don't split unless the form has separate fields)
 - For checkbox fields like "best time to call", use boolean values for the options
@@ -763,7 +767,7 @@ Return a JSON object with:
           ],
           'Contact Information': [
             'address', 'street', 'city', 'state', 'zip', 'postal', 'phone', 
-            'telephone', 'email', 'fax', 'contact', 'county', 'mailing'
+            'telephone', 'email', 'fax', 'contact', 'mailing'
           ],
           'Employment Information': [
             'employ', 'job', 'occupation', 'work', 'position', 'title', 'salary',
@@ -792,6 +796,10 @@ Return a JSON object with:
           'Document Information': [
             'form', 'document', 'application', 'signature', 'sign', 'date', 'complete',
             'submit', 'file', 'number', 'reference', 'id', 'identification'
+          ],
+          'Address Information': [
+            // Add a dedicated address section that includes county
+            'address', 'street', 'city', 'state', 'zip', 'postal', 'county', 'mailing'
           ]
         };
         
@@ -808,6 +816,34 @@ Return a JSON object with:
         fieldIds.forEach(fieldId => {
           const fieldName = fieldId.toLowerCase();
           const fieldLabel = this.formatFieldLabel(fieldId).toLowerCase();
+          
+          // Special handling for address fields to keep them together
+          // If we see county, city, state, or zip, check if they should be grouped
+          if (fieldName.includes('county') || fieldName.includes('city') || 
+              fieldName.includes('state') || fieldName.includes('zip')) {
+            // If any address fields were already assigned, put this one in the same category
+            for (const [category, fields] of Object.entries(groupedFields)) {
+              // Check if this category already has address-related fields
+              if (fields.some(f => {
+                const fName = f.toLowerCase();
+                return fName.includes('address') || fName.includes('city') ||
+                       fName.includes('state') || fName.includes('zip') || 
+                       fName.includes('county') || fName.includes('street');
+              })) {
+                // Add to the same address group to keep these fields together
+                groupedFields[category].push(fieldId);
+                console.log(`Grouped address field ${fieldId} with other address fields in ${category}`);
+                return; // Skip further categorization for this field
+              }
+            }
+            
+            // If no address fields found yet, prioritize the Address Information category
+            if (groupedFields['Address Information']) {
+              groupedFields['Address Information'].push(fieldId);
+              console.log(`Added address field ${fieldId} to Address Information category`);
+              return; // Skip further categorization
+            }
+          }
           
           // Try to find matching category
           let assigned = false;
