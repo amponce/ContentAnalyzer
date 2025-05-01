@@ -1,10 +1,10 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2, CheckCircle, AlertCircle, FileWarning, ExternalLink, FileText, ChevronRight } from "lucide-react";
-import { VAFormProcessor as FormProcessor } from '@/lib/va-forms/form-processor';
+import { VAFormProcessor as FormProcessor, getAgentUsage } from '@/lib/va-forms/form-processor';
 import { PDFProcessor } from '@/lib/pdf-processor';
 import type { FormProcessingResult, FormSummary } from '@/lib/va-forms/types';
 
@@ -20,6 +20,14 @@ export function VAFormProcessorComponent() {
   const [processingPages, setProcessingPages] = useState<number>(0);
   const [totalPages, setTotalPages] = useState<number>(0);
   const [processingPageIndex, setProcessingPageIndex] = useState<number>(0);
+  const [agentUsage, setAgentUsage] = useState({
+    parserCalled: false,
+    builderCalled: false,
+    designerCalled: false,
+    qaCalled: false,
+    lastRun: null as Date | null
+  });
+  const [debugMode, setDebugMode] = useState(false);
 
   const isPDF = (file: File) => {
     return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
@@ -314,24 +322,6 @@ export function VAFormProcessorComponent() {
             combinedResult.formNumber = 'GENERIC';
             combinedResult.formTitle = 'Generic Form';
           }
-          
-          // Add placeholder fields for common form fields if they're missing
-          // This ensures the form structure is more complete
-          const commonFields = [
-            'fullName', 'firstName', 'lastName', 'socialSecurityNumber', 
-            'dateOfBirth', 'address', 'phoneNumber', 'emailAddress',
-            'veteranName', 'signature', 'signatureDate'
-          ];
-          
-          commonFields.forEach(field => {
-            if (!combinedResult.fields[field]) {
-              // Add empty field with low confidence
-              combinedResult.fields[field] = {
-                value: '',
-                confidence: 0.1
-              };
-            }
-          });
         }
         
         setResult(combinedResult);
@@ -379,6 +369,14 @@ export function VAFormProcessorComponent() {
     }
   };
 
+  const checkAgentUsage = useCallback(() => {
+    const usage = getAgentUsage();
+    setAgentUsage({
+      ...usage,
+      lastRun: usage.lastRun ? new Date(usage.lastRun) : null
+    });
+  }, []);
+
   const handleOpenInWindow = async () => {
     if (!result) return;
 
@@ -395,6 +393,9 @@ export function VAFormProcessorComponent() {
           [key]: { value, confidence: 1 }
         }), {})
       });
+
+      // Check agent usage
+      checkAgentUsage();
 
       // Send message to background script to open a new window
       chrome.runtime.sendMessage(
@@ -418,6 +419,10 @@ export function VAFormProcessorComponent() {
     }
   };
 
+  const toggleDebugMode = () => {
+    setDebugMode(!debugMode);
+  };
+
   return (
     <div className="space-y-4">
       {/* Hidden canvas for PDF rendering fallback */}
@@ -425,7 +430,17 @@ export function VAFormProcessorComponent() {
       
       <Card>
         <CardHeader>
-          <CardTitle>Document Processor</CardTitle>
+          <div className="flex justify-between items-center">
+            <CardTitle>Document Processor</CardTitle>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={toggleDebugMode}
+              className="text-xs"
+            >
+              {debugMode ? "Hide Debug" : "Debug Mode"}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid w-full max-w-sm items-center gap-1.5">
@@ -559,6 +574,35 @@ export function VAFormProcessorComponent() {
                     <span>Open official digital form</span>
                     <ChevronRight className="h-4 w-4 ml-1" />
                   </a>
+                </div>
+              )}
+            </div>
+          )}
+
+          {debugMode && (
+            <div className="border rounded p-3 mt-4 text-xs bg-gray-50">
+              <h4 className="font-semibold mb-2">Agent Pipeline Usage:</h4>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex items-center">
+                  <div className={`w-3 h-3 rounded-full mr-2 ${agentUsage.parserCalled ? 'bg-green-500' : 'bg-gray-300'}`}></div>
+                  <span>Parser Agent</span>
+                </div>
+                <div className="flex items-center">
+                  <div className={`w-3 h-3 rounded-full mr-2 ${agentUsage.builderCalled ? 'bg-green-500' : 'bg-gray-300'}`}></div>
+                  <span>Builder Agent</span>
+                </div>
+                <div className="flex items-center">
+                  <div className={`w-3 h-3 rounded-full mr-2 ${agentUsage.designerCalled ? 'bg-green-500' : 'bg-gray-300'}`}></div>
+                  <span>Designer Agent</span>
+                </div>
+                <div className="flex items-center">
+                  <div className={`w-3 h-3 rounded-full mr-2 ${agentUsage.qaCalled ? 'bg-green-500' : 'bg-gray-300'}`}></div>
+                  <span>QA Agent</span>
+                </div>
+              </div>
+              {agentUsage.lastRun && (
+                <div className="mt-2 text-xs text-gray-500">
+                  Last run: {agentUsage.lastRun.toLocaleTimeString()}
                 </div>
               )}
             </div>

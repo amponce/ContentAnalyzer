@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { Settings } from '@/components/settings';
 import { VAFormProcessorComponent } from '@/components/va-form-processor';
 import { WebSearch } from '@/components/web-search';
+import { EnhancedAnalysis, AnalysisOptions } from '@/components/enhanced-analysis';
 import { Button } from "@/components/ui/button";
 import { 
   BarChart, 
@@ -12,6 +13,7 @@ import {
   Clipboard,
   Globe,
   Download,
+  Sliders
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
@@ -28,6 +30,10 @@ interface AnalysisResult {
   markdown?: string;
   chunkIndex?: number;
   totalChunks?: number;
+  themes?: string[];
+  aspects?: Record<string, { sentiment: string; confidence: number }>;
+  emotions?: Record<string, number>;
+  suggestions?: string[];
 }
 
 const ensureContentScriptLoaded = async (tabId: number): Promise<void> => {
@@ -63,7 +69,7 @@ const ensureContentScriptLoaded = async (tabId: number): Promise<void> => {
 };
 
 function Popup() {
-  const [activeView, setActiveView] = useState<'analysis' | 'forms' | 'search' | 'settings'>('analysis');
+  const [activeView, setActiveView] = useState<'analysis' | 'enhanced' | 'forms' | 'search' | 'settings'>('analysis');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<AnalysisResult[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -84,7 +90,11 @@ function Popup() {
           text: message.data.text,
           markdown: message.data.markdown,
           chunkIndex: message.data.chunkIndex,
-          totalChunks: message.data.totalChunks
+          totalChunks: message.data.totalChunks,
+          themes: message.data.themes,
+          aspects: message.data.aspects,
+          emotions: message.data.emotions,
+          suggestions: message.data.suggestions
         }]);
         setError(null);
         setLoading(false);
@@ -239,6 +249,26 @@ function Popup() {
     }
   };
 
+  const handleEnhancedAnalysis = async (text: string, options: AnalysisOptions) => {
+    setLoading(true);
+    setError(null);
+    try {
+      console.log('Starting enhanced sentiment analysis...');
+      console.log('Options:', options);
+      
+      // Send to background script through port
+      sendMessage({
+        action: "analyzeSentiment",
+        text,
+        options
+      });
+    } catch (err) {
+      console.error('Failed to analyze text:', err);
+      setError(err instanceof Error ? err.message : 'Failed to analyze text');
+      setLoading(false);
+    }
+  };
+
   const clearResults = () => {
     setResults([]);
     setError(null);
@@ -333,6 +363,82 @@ function Popup() {
     URL.revokeObjectURL(url);
   };
 
+  // Add a new function for Quick Analysis (page summaries)
+  const handleQuickAnalysis = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      console.log('Starting quick analysis (page summary)...');
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) {
+        throw new Error('No active tab found');
+      }
+
+      console.log('Ensuring content script is loaded...');
+      // Ensure content script is loaded
+      await ensureContentScriptLoaded(tab.id);
+
+      console.log('Requesting page content for summary...');
+      // Now send message to content script to get all text content
+      const response = await new Promise<any>((resolve, reject) => {
+        chrome.tabs.sendMessage(tab.id!, { action: "getPageContent" }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.error('Error getting page content:', chrome.runtime.lastError);
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            console.log('Received page content response:', response);
+            resolve(response);
+          }
+        });
+      });
+
+      if (response?.error) {
+        throw new Error(response.error);
+      }
+      if (!response?.content) {
+        throw new Error('No content found to summarize');
+      }
+
+      console.log('Generating in-depth page summary...');
+      // Send to background script for summary generation
+      const summaryResponse = await new Promise<any>((resolve, reject) => {
+        chrome.runtime.sendMessage({
+          action: "analyzePage",
+          text: response.content,
+          generateSummary: true
+        }, (result) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            resolve(result);
+          }
+        });
+      });
+
+      if (summaryResponse?.error) {
+        throw new Error(summaryResponse.error);
+      }
+
+      // Add the result to our results array
+      setResults(prev => [...prev, {
+        sentiment: summaryResponse.sentiment,
+        confidence: summaryResponse.confidence,
+        text: response.content.substring(0, 300) + (response.content.length > 300 ? '...' : ''),
+        markdown: summaryResponse.markdown,
+        summary: summaryResponse.summary,
+        keyPoints: summaryResponse.keyPoints,
+        themes: summaryResponse.themes,
+        contentType: summaryResponse.contentType
+      }]);
+      
+      setLoading(false);
+    } catch (err) {
+      console.error('Failed to generate page summary:', err);
+      setError(err instanceof Error ? err.message : 'Failed to generate page summary');
+      setLoading(false);
+    }
+  };
+
   const renderContent = () => {
     switch (activeView) {
       case 'forms':
@@ -341,6 +447,26 @@ function Popup() {
         return <WebSearch />;
       case 'settings':
         return <Settings onSave={() => setActiveView('analysis')} />;
+      case 'enhanced':
+        return (
+          <>
+            <div className="mb-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setActiveView('analysis')}
+                className="mb-4"
+              >
+                ← Back to Quick Analysis
+              </Button>
+            </div>
+            <EnhancedAnalysis 
+              onAnalyze={handleEnhancedAnalysis}
+              isAnalyzing={loading}
+              result={results.length > 0 ? results[results.length - 1] : undefined}
+            />
+          </>
+        );
       default:
         return (
           <>
@@ -373,6 +499,16 @@ function Popup() {
               >
                 <Clipboard className="h-4 w-4 mr-2" />
                 Analyze Clipboard
+              </Button>
+              
+              <Button
+                variant="outline"
+                className="w-full justify-start text-sm font-normal"
+                onClick={handleQuickAnalysis}
+                disabled={loading}
+              >
+                <BarChart className="h-4 w-4 mr-2" />
+                Generate Page Summary
               </Button>
             </div>
 
@@ -458,16 +594,19 @@ function Popup() {
             <div className={`p-4 flex items-center justify-between rounded-t-lg ${
               result.sentiment === 'positive' ? 'bg-green-50 dark:bg-green-900/20' :
               result.sentiment === 'negative' ? 'bg-red-50 dark:bg-red-900/20' :
+              result.sentiment === 'mixed' ? 'bg-yellow-50 dark:bg-yellow-900/20' :
               'bg-gray-50 dark:bg-gray-900/20'
             }`}>
               <div className="flex items-center gap-3">
                 <span className={`inline-flex items-center justify-center w-10 h-10 rounded-full ${
                   result.sentiment === 'positive' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' :
                   result.sentiment === 'negative' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' :
+                  result.sentiment === 'mixed' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300' :
                   'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300'
                 }`}>
                   {result.sentiment === 'positive' ? '✓' : 
-                   result.sentiment === 'negative' ? '✗' : '•'}
+                   result.sentiment === 'negative' ? '✗' :
+                   result.sentiment === 'mixed' ? '◑' : '•'}
                 </span>
                 <div className="flex flex-col">
                   <span className="text-lg font-semibold capitalize">
@@ -501,6 +640,18 @@ function Popup() {
                         <blockquote className="border-l-4 border-muted pl-4 italic my-4" {...props} />
                       ),
                       strong: ({node, ...props}) => <strong className="font-semibold" {...props} />,
+                      table: ({node, ...props}) => (
+                        <div className="overflow-x-auto my-4">
+                          <table className="w-full border-collapse" {...props} />
+                        </div>
+                      ),
+                      thead: ({node, ...props}) => <thead className="bg-gray-50" {...props} />,
+                      th: ({node, ...props}) => (
+                        <th className="px-3 py-2 text-left font-medium text-gray-700 border" {...props} />
+                      ),
+                      td: ({node, ...props}) => (
+                        <td className="px-3 py-2 border" {...props} />
+                      ),
                     }}
                   >
                     {result.markdown}
@@ -517,7 +668,7 @@ function Popup() {
   };
 
   return (
-    <div className="w-[400px] min-h-[300px] bg-white">
+    <div className={`${activeView === 'enhanced' ? 'w-[800px]' : 'w-[400px]'} min-h-[300px] bg-white`}>
       <header className="bg-[#1a365d] text-white p-4 rounded-t-lg shadow-sm">
         <div className="flex items-center justify-between">
           <div className="flex items-center">
@@ -535,6 +686,24 @@ function Popup() {
         {renderContent()}
 
         <div className="border-t pt-4 space-y-2">
+          <Button
+            variant="outline"
+            className={`w-full justify-start text-sm font-normal ${activeView === 'analysis' ? 'bg-gray-100' : ''}`}
+            onClick={() => setActiveView('analysis')}
+          >
+            <BarChart className="h-4 w-4 mr-2" />
+            Quick Analysis
+          </Button>
+
+          <Button
+            variant="outline"
+            className={`w-full justify-start text-sm font-normal ${activeView === 'enhanced' ? 'bg-gray-100' : ''}`}
+            onClick={() => setActiveView('enhanced')}
+          >
+            <Sliders className="h-4 w-4 mr-2" />
+            Enhanced Analysis
+          </Button>
+
           <Button
             variant="outline"
             className={`w-full justify-start text-sm font-normal ${activeView === 'forms' ? 'bg-gray-100' : ''}`}

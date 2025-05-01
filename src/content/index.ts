@@ -286,6 +286,12 @@ chrome.runtime.onMessage.addListener((request, _sender: chrome.runtime.MessageSe
       return true;
     }
 
+    if (request.action === "getPageContent") {
+      const content = getPageContent();
+      sendResponse({ content });
+      return true;
+    }
+
     if (request.action === "analyzePage") {
       const text = getPageContent();
       const chunks = splitContentIntoChunks(text);

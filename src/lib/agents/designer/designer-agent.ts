@@ -146,17 +146,12 @@ export class DesignerAgent extends BaseAgent<DesignerInput, DesignerOutput> {
   private optimizeFieldOrder(formData: FormData): Record<string, string[]> {
     const result: Record<string, string[]> = {};
     
-    // Field type priority (most important first)
-    const fieldTypePriority: Record<string, number> = {
-      'text': 1,        // Basic text fields first
-      'checkbox': 2,    // Simple yes/no questions next
-      'radio': 3,       // Selection options after that
-      'select': 4,      // Dropdowns after radio buttons
-      'date': 5,        // Date selectors next
-      'textarea': 6,    // Multi-line text areas later
-      'object': 7,      // Complex nested objects later
-      'array': 8        // Array fields last
-    };
+    // Check if the form data has a source indicating sections and fields come from original form
+    const hasOriginalStructure = formData.sections.some(section => 
+      section.title.includes('SECTION') || 
+      section.title.includes('IDENTIFICATION') ||
+      section.title.includes('CONTACT')
+    );
     
     // Process each section
     formData.sections.forEach(section => {
@@ -165,18 +160,35 @@ export class DesignerAgent extends BaseAgent<DesignerInput, DesignerOutput> {
         .map(id => formData.fields.find(f => f.id === id))
         .filter(Boolean) as FormField[];
       
-      // Sort fields by type priority
-      const sortedFields = [...sectionFields].sort((a, b) => {
-        const priorityA = fieldTypePriority[a.type] || 999;
-        const priorityB = fieldTypePriority[b.type] || 999;
-        return priorityA - priorityB;
-      });
-      
-      // Store the sorted field IDs
-      result[section.title] = sortedFields.map(f => f.id);
-      
-      // Update the section's field order
-      section.fields = result[section.title];
+      if (hasOriginalStructure) {
+        // Preserve original field order for forms with detected sections
+        result[section.title] = section.fields;
+      } else {
+        // Field type priority (most important first)
+        const fieldTypePriority: Record<string, number> = {
+          'text': 1,        // Basic text fields first
+          'checkbox': 2,    // Simple yes/no questions next
+          'radio': 3,       // Selection options after that
+          'select': 4,      // Dropdowns after radio buttons
+          'date': 5,        // Date selectors next
+          'textarea': 6,    // Multi-line text areas later
+          'object': 7,      // Complex nested objects later
+          'array': 8        // Array fields last
+        };
+        
+        // Sort fields by type priority
+        const sortedFields = [...sectionFields].sort((a, b) => {
+          const priorityA = fieldTypePriority[a.type] || 999;
+          const priorityB = fieldTypePriority[b.type] || 999;
+          return priorityA - priorityB;
+        });
+        
+        // Store the sorted field IDs
+        result[section.title] = sortedFields.map(f => f.id);
+        
+        // Update the section's field order
+        section.fields = result[section.title];
+      }
     });
     
     return result;
@@ -190,50 +202,141 @@ export class DesignerAgent extends BaseAgent<DesignerInput, DesignerOutput> {
   private determineFieldComponents(formData: FormData): Record<string, string> {
     const componentMappings: Record<string, string> = {};
     
+    // Identify date-related fields that would benefit from date picker
+    const datePatterns = [
+      /date/i, /birth/i, /dob/i, /sign.*date/i, /date.*sign/i, 
+      /expir/i, /validity/i, /issued/i
+    ];
+    
+    // Identify fields that should be checkboxes
+    const checkboxPatterns = [
+      /check/i, /agree/i, /confirm/i, /accept/i, 
+      /yes.*no/i, /true.*false/i, /enabled/i, 
+      /morning/i, /afternoon/i, /evening/i, /call time/i,
+      /consent/i, /opt.*in/i, /subscribe/i
+    ];
+    
+    // Phone number patterns
+    const phonePatterns = [
+      /phone/i, /telephone/i, /mobile/i, /cell/i, /contact.*number/i
+    ];
+    
+    // Email patterns
+    const emailPatterns = [
+      /email/i, /e-mail/i, /contact.*address/i
+    ];
+    
+    // Address patterns
+    const addressPatterns = [
+      /address/i, /street/i, /city/i, /state/i, /zip/i, 
+      /postal/i, /country/i, /county/i
+    ];
+    
+    // Identify field clusters (related fields that should be grouped)
+    const fieldClusters: Record<string, string[]> = {
+      'address': [],
+      'name': [],
+      'contact': [],
+      'date': []
+    };
+    
+    // First pass - assign components based on field properties and identify clusters
     formData.fields.forEach(field => {
       const { id, label, type, value } = field;
-      
-      // Determine the best component based on field properties
       let component = type; // Default to the field type
       
-      // Special handling for different types
-      if (type === 'text') {
-        // Check for specialized text inputs
-        if (label.toLowerCase().includes('email')) {
-          component = 'email-input';
-        } else if (label.toLowerCase().includes('phone')) {
-          component = 'phone-input';
-        } else if (label.toLowerCase().includes('password')) {
-          component = 'password-input';
-        } else if (label.toLowerCase().includes('search')) {
-          component = 'search-input';
-        } else if (label.toLowerCase().includes('url')) {
-          component = 'url-input';
-        } else if (label.toLowerCase().includes('number') || 
-                  label.toLowerCase().includes('amount') ||
-                  label.toLowerCase().includes('count')) {
-          component = 'number-input';
+      // Check if this is a date field
+      const isDateField = datePatterns.some(pattern => 
+        pattern.test(label) || pattern.test(id)
+      );
+      
+      if (isDateField) {
+        component = 'date';
+        fieldClusters['date'].push(id);
+      }
+      
+      // Check if this should be a checkbox
+      const isCheckboxField = checkboxPatterns.some(pattern => 
+        pattern.test(label) || pattern.test(id)
+      ) || (typeof value === 'boolean') || value === 'true' || value === 'false' ||
+         type === 'checkbox';
+      
+      if (isCheckboxField) {
+        component = 'checkbox';
+      }
+      
+      // Handle phone fields
+      if (phonePatterns.some(pattern => pattern.test(label) || pattern.test(id))) {
+        component = 'phone';
+        fieldClusters['contact'].push(id);
+      }
+      
+      // Handle email fields
+      if (emailPatterns.some(pattern => pattern.test(label) || pattern.test(id))) {
+        component = 'email';
+        fieldClusters['contact'].push(id);
+      }
+      
+      // Handle address fields
+      if (addressPatterns.some(pattern => pattern.test(label) || pattern.test(id))) {
+        // Use specialized address components
+        if (id.toLowerCase().includes('street') || label.toLowerCase().includes('street')) {
+          component = 'street-address';
+        } else if (id.toLowerCase().includes('city') || label.toLowerCase().includes('city')) {
+          component = 'city';
+        } else if (id.toLowerCase().includes('state') || label.toLowerCase().includes('state')) {
+          component = 'state';
+        } else if (id.toLowerCase().includes('zip') || id.toLowerCase().includes('postal') || 
+                  label.toLowerCase().includes('zip') || label.toLowerCase().includes('postal')) {
+          component = 'postal-code';
+        } else if (id.toLowerCase().includes('county') || label.toLowerCase().includes('county')) {
+          component = 'county';
+        } else {
+          component = 'address-field';
         }
-      } else if (type === 'object') {
-        // Detect special object types
-        if (typeof value === 'object' && value !== null) {
-          const keys = Object.keys(value);
-          
-          if (keys.some(k => k.toLowerCase().includes('married') || 
-                            k.toLowerCase().includes('single') || 
-                            k.toLowerCase().includes('divorced'))) {
-            component = 'marital-status-selector';
-          } else if (keys.some(k => k.toLowerCase().includes('employer') || 
-                                   k.toLowerCase().includes('job'))) {
-            component = 'employment-card';
-          } else if (keys.some(k => k.toLowerCase().includes('address'))) {
-            component = 'address-card';
-          }
+        
+        fieldClusters['address'].push(id);
+      }
+      
+      // Handle name fields
+      if (id.toLowerCase().includes('name') || label.toLowerCase().includes('name')) {
+        if (id.toLowerCase().includes('first') || label.toLowerCase().includes('first')) {
+          component = 'first-name';
+        } else if (id.toLowerCase().includes('last') || label.toLowerCase().includes('last')) {
+          component = 'last-name';
+        } else if (id.toLowerCase().includes('middle') || label.toLowerCase().includes('middle')) {
+          component = 'middle-name';
+        } else {
+          component = 'name-field';
+        }
+        
+        fieldClusters['name'].push(id);
+      }
+      
+      // Handle special text inputs
+      if (type === 'text') {
+        if (id.toLowerCase().includes('search') || label.toLowerCase().includes('search')) {
+          component = 'search-input';
+        } else if ((id.toLowerCase().includes('ssn') || label.toLowerCase().includes('ssn') ||
+                    id.toLowerCase().includes('security') || label.toLowerCase().includes('security'))
+                   && !id.toLowerCase().includes('question')) {
+          component = 'ssn-input';
+        } else if (id.toLowerCase().includes('password') || label.toLowerCase().includes('password')) {
+          component = 'password-input';
+        } else if (id.toLowerCase().includes('number') || label.toLowerCase().includes('number')) {
+          component = 'number-input';
         }
       }
       
       componentMappings[id] = component;
     });
+    
+    // Log the component mappings
+    console.log("Generated UI component mappings:", 
+      Object.entries(componentMappings)
+      .map(([id, component]) => `${id}: ${component}`)
+      .join(', ')
+    );
     
     return componentMappings;
   }
@@ -262,6 +365,20 @@ export class DesignerAgent extends BaseAgent<DesignerInput, DesignerOutput> {
    * @param formData The form data to update
    */
   private optimizeSectionOrder(formData: FormData): void {
+    // Check if the form data has sections from the original form
+    const hasOriginalStructure = formData.sections.some(section => 
+      section.title.includes('SECTION') || 
+      section.title.includes('IDENTIFICATION') ||
+      section.title.includes('CONTACT')
+    );
+    
+    // If we have the original form structure, don't reorder sections
+    if (hasOriginalStructure) {
+      console.log("Preserving original form section order");
+      return;
+    }
+    
+    console.log("Applying optimized section ordering");
     // Section priority (most important first)
     const sectionPriority: Record<string, number> = {
       'Personal Information': 1,

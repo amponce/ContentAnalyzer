@@ -1,17 +1,37 @@
 import { FormProcessingResult, FormSummary, OCRResult } from './types';
 import { AI_MODELS } from '../constants/ai-models';
+import { createFormProcessingPipeline } from '../agents';
 
-// Common form fields that should be attempted to be extracted even if not explicitly found
-const COMMON_FORM_FIELDS = [
-  'fullName', 'firstName', 'lastName', 'middleName', 'middleInitial',
-  'address', 'streetAddress', 'city', 'state', 'zipCode', 'postalCode',
-  'phoneNumber', 'emailAddress', 'dateOfBirth', 'socialSecurityNumber',
-  'signature', 'signatureDate', 'dateOfApplication', 'applicantName',
-  // Additional fields for various government forms
-  'ein', 'taxID', 'businessName', 'employerName', 'employerAddress',
-  'accountNumber', 'licenseNumber', 'permitNumber', 'registrationNumber',
-  'policyNumber', 'claimNumber', 'fileNumber', 'referenceNumber'
-];
+// Add this agent tracking function
+let agentUsageTracking: {
+  parserCalled: boolean;
+  builderCalled: boolean;
+  designerCalled: boolean;
+  qaCalled: boolean;
+  lastRun: Date | null;
+} = {
+  parserCalled: false,
+  builderCalled: false,
+  designerCalled: false,
+  qaCalled: false,
+  lastRun: null
+};
+
+// Export for testing/monitoring
+export const getAgentUsage = () => {
+  return { ...agentUsageTracking };
+};
+
+// Reset agent tracking
+export const resetAgentUsage = () => {
+  agentUsageTracking = {
+    parserCalled: false,
+    builderCalled: false,
+    designerCalled: false,
+    qaCalled: false,
+    lastRun: null
+  };
+};
 
 // General form number detection patterns (works for various agencies)
 const FORM_PATTERNS = [
@@ -132,22 +152,6 @@ export class VAFormProcessor {
       // Log successful field extraction
       console.log(`Extracted ${Object.keys(fields).length} fields from the form`);
       
-      // If we have a form number but very few fields, try to add some common empty fields
-      // to improve the form structure
-      if ((formInfo.formNumber || directFormInfo.formNumber) && Object.keys(fields).length < 10) {
-        console.log('Adding common fields to sparse form data...');
-        
-        // Add common fields to provide structure
-        COMMON_FORM_FIELDS.forEach(fieldName => {
-          if (!fields[fieldName]) {
-            fields[fieldName] = {
-              value: '',
-              confidence: 0.1 // Very low confidence since we're just providing structure
-            };
-          }
-        });
-      }
-      
       // Determine the proper form number format
       let formNumber = formInfo.formNumber || directFormInfo.formNumber;
       if (formNumber) {
@@ -160,7 +164,8 @@ export class VAFormProcessor {
         formNumber: formNumber || (hasExtractedFields ? 'GENERIC' : 'UNKNOWN'),
         formTitle: formInfo.formTitle || directFormInfo.formTitle || (hasExtractedFields ? 'Generic Form' : 'Unknown Form Type'),
         fields,
-        rawOCR: ocrResults
+        rawOCR: ocrResults,
+        sections: formInfo.sections || undefined
       };
     } catch (error) {
       console.error('Error processing form:', error);
@@ -397,6 +402,7 @@ export class VAFormProcessor {
     formNumber: string;
     formTitle: string;
     fields: Record<string, string | number | boolean>;
+    sections?: {title: string, fields: string[]}[];
   }> {
     try {
       console.log("Starting form field extraction using AI...");
@@ -443,36 +449,38 @@ Pay close attention to these specific fields and organize them accordingly.`;
 
 1. Identify the form type and number (if present)
 2. Extract ALL fields and their values from the OCR text
-3. Return a structured JSON response
+3. Identify the form sections EXACTLY as they appear in the original document
+4. Group fields precisely as they appear in the original form
+5. Return a structured JSON response
 
 Important guidelines:
-- Identify form numbers in their original format (e.g., "VA Form 10-10EZ", "Form W-9", "DMV DL-44", "HUD-92900-A")
+- Preserve the exact original form structure, sections, and fields
+- Capture form structure in the sections array, matching the original document's organization
+- Group related fields exactly as they are grouped in the original form (e.g., keep address fields together including county)
+- Keep field names consistent with the original form labels
 - Extract ALL visible fields, including checkboxes, sections, and multi-part answers
+- Preserve the order of fields and sections from the original document
+- For date fields, provide the date in a simple format that doesn't require calendar navigation
+- For name fields, respect the original form structure (don't split unless the form has separate fields)
+- For checkbox fields like "best time to call", use boolean values for the options
 - For empty fields, use an empty string value
-- For checkboxes, determine if they're checked (true) or unchecked (false)
-- Use camelCase field names that accurately reflect the field labels
-- Include both exact form labels and their values
-- Use consistent field naming - if a field appears to be "Social Security Number", always use "socialSecurityNumber" as the key
-- Split complex fields into logical parts (e.g., break "Full Name" into "firstName", "middleName", "lastName")
-- For table data, use structured objects with appropriate naming
-- Don't include fields where you can't determine a clear label-value relationship
 
 ${formHint}
 
 Your JSON response must follow this format:
 {
-  "formNumber": "5655", // The form number, or "GENERIC" if unknown
-  "formTitle": "Financial Status Report", // The exact form title
+  "formNumber": "10-334", // The form number, or "GENERIC" if unknown
+  "formTitle": "Tribal Documentation Form", // The exact form title
   "fields": {
-    "socialSecurityNumber": "123-45-6789",
-    "fileNumber": "ABC123",
-    "firstName": "John",
-    "middleName": "David",
-    "lastName": "Smith",
-    "dateOfBirth": "01/01/1980",
-    "phoneNumber": "(555) 123-4567",
-    // ... all other identified fields with their values
-  }
+    // All extracted fields with their values
+  },
+  "sections": [
+    {
+      "title": "SECTION I: VETERAN IDENTIFICATION INFORMATION",
+      "fields": ["veteransName", "dateOfBirth", "currentMailingAddress", "city", "state", "zipCode", "county", "vaMemberId", "localVaMedicalCenter", "veteranTelephoneNumber", "signature", "date"] 
+    },
+    // Other sections from the form
+  ]
 }`
             },
             {
@@ -544,10 +552,14 @@ Your JSON response must follow this format:
         console.log(`Form title identified: ${formTitle || 'Unknown'}`);
         console.log(`Number of fields extracted: ${Object.keys(sanitizedFields).length}`);
         
+        // Get sections if available
+        const sections = parsedResult.sections || [];
+        
         return {
           formNumber: formNumber,
           formTitle: formTitle,
-          fields: sanitizedFields
+          fields: sanitizedFields,
+          sections: sections
         };
       } catch (error) {
         console.error('Failed to parse form analysis response:', error);
@@ -643,101 +655,196 @@ Return a JSON object with:
    */
   async createDigitalForm(result: FormProcessingResult): Promise<any> {
     try {
+      console.log("Creating digital form with agent pipeline...");
+      
+      // Try to use the agent pipeline if available
+      try {
+        // Create the agent pipeline
+        const pipeline = createFormProcessingPipeline();
+        
+        // Create a simple page array from rawOCR
+        const pages = result.rawOCR.map(ocr => ({
+          text: ocr.text,
+          imageData: null // We don't have the original image data here
+        }));
+        
+        // Only proceed if we have OCR data
+        if (pages.length > 0) {
+          console.log("✅ Running form through agent pipeline");
+          console.log(`Form has ${Object.keys(result.fields).length} fields and ${result.rawOCR.length} OCR chunks`);
+          
+          // Track agent usage
+          agentUsageTracking.lastRun = new Date();
+          
+          // Mark parser as already done since we're starting with OCR results
+          agentUsageTracking.parserCalled = true;
+          console.log("✓ Parser agent (bypassed, using OCR results)");
+          
+          // Create simple parser output to feed to builder
+          const parserOutput = {
+            rawText: result.rawOCR.map(ocr => ocr.text).join('\n\n'),
+            fields: Object.entries(result.fields).map(([id, field]) => ({
+              id,
+              label: this.formatFieldLabel(id),
+              type: this.inferFieldType(id, String(field.value)),
+              value: field.value
+            })),
+            confidence: 0.9,
+            metadata: {}
+          };
+          
+          // Use the builder agent
+          console.log("⏳ Running builder agent...");
+          const builderResult = await pipeline.runStage('builder', {
+            parserOutput,
+            formNumber: result.formNumber,
+            formTitle: result.formTitle
+          });
+          agentUsageTracking.builderCalled = true;
+          console.log(`✓ Builder agent completed (${builderResult.formData.sections.length} sections created)`);
+          
+          // Use the designer agent
+          console.log("⏳ Running designer agent...");
+          const designerResult = await pipeline.runStage('designer', {
+            builderOutput: builderResult
+          });
+          agentUsageTracking.designerCalled = true;
+          console.log(`✓ Designer agent completed (layout: ${designerResult.designMetadata.layout})`);
+          
+          // Use the QA agent
+          console.log("⏳ Running QA agent...");
+          const qaResult = await pipeline.runStage('qa', {
+            designerOutput: designerResult,
+            originalText: parserOutput.rawText
+          });
+          agentUsageTracking.qaCalled = true;
+          console.log(`✓ QA agent completed (issues found: ${qaResult.issues.length})`);
+          
+          // Use the validated form data from the QA agent
+          console.log("✅ Agent pipeline completed successfully!");
+          return {
+            formNumber: result.formNumber || 'UNKNOWN',
+            formTitle: result.formTitle || 'Generic Form',
+            dateScanned: new Date().toISOString(),
+            fields: qaResult.validatedFormData.fields,
+            sections: qaResult.validatedFormData.sections,
+            // Add agent metadata for debugging
+            agentMetadata: {
+              builderConfidence: builderResult.metadata.confidence,
+              designerLayout: designerResult.designMetadata.layout,
+              qaIssues: qaResult.issues.length,
+              agentPipelineUsed: true
+            }
+          };
+        }
+      } catch (agentError) {
+        console.warn("❌ Agent pipeline error, falling back to default processing:", agentError);
+        // Fall back to the original implementation
+      }
+      
+      // Default implementation (original code)
       // Use a dynamic approach that works with ANY government form
       let groupedSections = [];
       
-      // Group fields by logical categories based on field content
-      const fieldIds = Object.keys(result.fields);
-      
-      // Create field mappings to categorize fields
-      const fieldCategories: {[category: string]: string[]} = {
-        'Personal Information': [
-          'name', 'ssn', 'social', 'security', 'birth', 'dob', 'gender', 'sex',
-          'marital', 'spouse', 'dependents', 'age'
-        ],
-        'Contact Information': [
-          'address', 'street', 'city', 'state', 'zip', 'postal', 'phone', 
-          'telephone', 'email', 'fax', 'contact'
-        ],
-        'Employment Information': [
-          'employ', 'job', 'occupation', 'work', 'position', 'title', 'salary',
-          'income', 'earnings', 'wage', 'company', 'business', 'profession'
-        ],
-        'Financial Information': [
-          'income', 'salary', 'wage', 'earnings', 'expense', 'payment', 'cost',
-          'financial', 'money', 'pay', 'deduction', 'tax', 'net', 'gross', 'total'
-        ],
-        'Asset Information': [
-          'asset', 'property', 'own', 'value', 'worth', 'saving', 'account', 'bank',
-          'cash', 'investment', 'stock', 'bond', 'fund', 'real estate', 'vehicle', 'car'
-        ],
-        'Debt Information': [
-          'debt', 'loan', 'credit', 'owe', 'payment', 'monthly payment', 'balance',
-          'creditor', 'installment', 'finance', 'liability', 'obligation'
-        ],
-        'Medical Information': [
-          'health', 'medical', 'condition', 'disability', 'treatment', 'diagnosis',
-          'doctor', 'hospital', 'care', 'insurance', 'symptom', 'medication'
-        ],
-        'Military/Service Information': [
-          'military', 'service', 'veteran', 'branch', 'army', 'navy', 'marine',
-          'air force', 'discharge', 'duty', 'rank', 'served'
-        ],
-        'Document Information': [
-          'form', 'document', 'application', 'signature', 'sign', 'date', 'complete',
-          'submit', 'file', 'number', 'reference', 'id', 'identification'
-        ]
-      };
-      
-      // Create empty groups for each category
-      const groupedFields: {[group: string]: string[]} = {};
-      Object.keys(fieldCategories).forEach(category => {
-        groupedFields[category] = [];
-      });
-      
-      // Add a catch-all category
-      groupedFields['Other Information'] = [];
-      
-      // Sort each field into the appropriate category
-      fieldIds.forEach(fieldId => {
-        const fieldName = fieldId.toLowerCase();
-        const fieldLabel = this.formatFieldLabel(fieldId).toLowerCase();
+      // Check if we have original form sections from the AI extraction
+      if (result.sections && result.sections.length > 0) {
+        console.log("Using original form sections detected by AI");
+        groupedSections = result.sections;
+      } else {
+        console.log("No original sections detected, grouping fields by category");
+        // Group fields by logical categories based on field content
+        const fieldIds = Object.keys(result.fields);
         
-        // Try to find matching category
-        let assigned = false;
-        for (const [category, keywords] of Object.entries(fieldCategories)) {
-          if (keywords.some(keyword => 
-            fieldName.includes(keyword) || fieldLabel.includes(keyword)
-          )) {
-            groupedFields[category].push(fieldId);
-            assigned = true;
-            break;
+        // Create field mappings to categorize fields
+        const fieldCategories: {[category: string]: string[]} = {
+          'Personal Information': [
+            'name', 'ssn', 'social', 'security', 'birth', 'dob', 'gender', 'sex',
+            'marital', 'spouse', 'dependents', 'age'
+          ],
+          'Contact Information': [
+            'address', 'street', 'city', 'state', 'zip', 'postal', 'phone', 
+            'telephone', 'email', 'fax', 'contact', 'county', 'mailing'
+          ],
+          'Employment Information': [
+            'employ', 'job', 'occupation', 'work', 'position', 'title', 'salary',
+            'income', 'earnings', 'wage', 'company', 'business', 'profession'
+          ],
+          'Financial Information': [
+            'income', 'salary', 'wage', 'earnings', 'expense', 'payment', 'cost',
+            'financial', 'money', 'pay', 'deduction', 'tax', 'net', 'gross', 'total'
+          ],
+          'Asset Information': [
+            'asset', 'property', 'own', 'value', 'worth', 'saving', 'account', 'bank',
+            'cash', 'investment', 'stock', 'bond', 'fund', 'real estate', 'vehicle', 'car'
+          ],
+          'Debt Information': [
+            'debt', 'loan', 'credit', 'owe', 'payment', 'monthly payment', 'balance',
+            'creditor', 'installment', 'finance', 'liability', 'obligation'
+          ],
+          'Medical Information': [
+            'health', 'medical', 'condition', 'disability', 'treatment', 'diagnosis',
+            'doctor', 'hospital', 'care', 'insurance', 'symptom', 'medication'
+          ],
+          'Military/Service Information': [
+            'military', 'service', 'veteran', 'branch', 'army', 'navy', 'marine',
+            'air force', 'discharge', 'duty', 'rank', 'served'
+          ],
+          'Document Information': [
+            'form', 'document', 'application', 'signature', 'sign', 'date', 'complete',
+            'submit', 'file', 'number', 'reference', 'id', 'identification'
+          ]
+        };
+        
+        // Create empty groups for each category
+        const groupedFields: {[group: string]: string[]} = {};
+        Object.keys(fieldCategories).forEach(category => {
+          groupedFields[category] = [];
+        });
+        
+        // Add a catch-all category
+        groupedFields['Other Information'] = [];
+        
+        // Sort each field into the appropriate category
+        fieldIds.forEach(fieldId => {
+          const fieldName = fieldId.toLowerCase();
+          const fieldLabel = this.formatFieldLabel(fieldId).toLowerCase();
+          
+          // Try to find matching category
+          let assigned = false;
+          for (const [category, keywords] of Object.entries(fieldCategories)) {
+            if (keywords.some(keyword => 
+              fieldName.includes(keyword) || fieldLabel.includes(keyword)
+            )) {
+              groupedFields[category].push(fieldId);
+              assigned = true;
+              break;
+            }
           }
+          
+          // If not assigned to any specific category, add to Other Information
+          if (!assigned) {
+            groupedFields['Other Information'].push(fieldId);
+          }
+        });
+        
+        // Remove empty groups
+        Object.keys(groupedFields).forEach(group => {
+          if (groupedFields[group].length === 0) {
+            delete groupedFields[group];
+          }
+        });
+        
+        // Ensure we have at least one group
+        if (Object.keys(groupedFields).length === 0) {
+          groupedFields['Form Data'] = fieldIds;
         }
         
-        // If not assigned to any specific category, add to Other Information
-        if (!assigned) {
-          groupedFields['Other Information'].push(fieldId);
-        }
-      });
-      
-      // Remove empty groups
-      Object.keys(groupedFields).forEach(group => {
-        if (groupedFields[group].length === 0) {
-          delete groupedFields[group];
-        }
-      });
-      
-      // Ensure we have at least one group
-      if (Object.keys(groupedFields).length === 0) {
-        groupedFields['Form Data'] = fieldIds;
+        // Create sections from our dynamically assigned groups
+        groupedSections = Object.entries(groupedFields).map(([title, fields]) => ({
+          title,
+          fields
+        }));
       }
-      
-      // Create sections from our dynamically assigned groups
-      groupedSections = Object.entries(groupedFields).map(([title, fields]) => ({
-        title,
-        fields
-      }));
       
       // Prepare fields with types
       const processedFields = Object.entries(result.fields).map(([id, data]) => {
@@ -751,16 +858,38 @@ Return a JSON object with:
             // Try to parse as JSON
             const parsed = JSON.parse(fieldValue);
             if (typeof parsed === 'object' && parsed !== null) {
-              // Keep as string but with proper formatting
+              // Preserve the structure as JSON string
               fieldValue = JSON.stringify(parsed);
+              
+              // Detect if this is a complex object with nested structure
+              const isComplexObject = Object.values(parsed).some(v => typeof v === 'object' && v !== null);
+              
+              // Auto-detect field type based on content patterns
+              if (isComplexObject) {
+                fieldType = 'complex-object';
+              } else {
+                const hasBooleanValues = Object.values(parsed).some(v => 
+                  typeof v === 'boolean' || v === 'true' || v === 'false'
+                );
+                
+                if (hasBooleanValues) {
+                  // Could be preferences, checkboxes, options
+                  fieldType = 'boolean-group';
+                } else {
+                  // Simple object with string/number values
+                  fieldType = 'json-object';
+                }
+              }
             }
           }
         } catch (e) {
           // Not JSON, keep as is
         }
         
-        // Infer field type
-        fieldType = this.inferFieldType(id, String(fieldValue));
+        // Infer field type if not already set by JSON analysis
+        if (fieldType === 'text') {
+          fieldType = this.inferFieldType(id, String(fieldValue));
+        }
         
         return {
           id,

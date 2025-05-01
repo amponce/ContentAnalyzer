@@ -56,6 +56,10 @@ export interface FormProcessingResult {
     };
   };
   rawOCR: OCRResult[];
+  sections?: {
+    title: string;
+    fields: string[];
+  }[];
 }
 
 export interface FormSummary {
