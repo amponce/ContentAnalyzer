@@ -7,6 +7,35 @@ import { resolve } from 'path';
 // Note: PDF worker is now copied to the public/ directory
 // and will be automatically included in the build
 
+/**
+ * Multi-Agent Form Processing Architecture
+ * ----------------------------------------
+ * This configuration supports a multi-agent approach to form processing:
+ * 
+ * 1. Parsing Agent: OCR and text extraction from forms
+ *    - Specialized in document structure and layout analysis
+ *    - Identifies form fields, labels, and values with high accuracy
+ *    - Processes multi-page documents and complex layouts
+ * 
+ * 2. Builder Agent: Transforms raw extracted data into structured form objects
+ *    - Validates field values against expected formats
+ *    - Resolves ambiguities in field identification
+ *    - Groups related fields into logical sections
+ * 
+ * 3. Design Agent: Creates user-friendly form layouts from structured data
+ *    - Implements multi-step navigation for complex forms
+ *    - Optimizes field arrangement for better usability
+ *    - Applies appropriate UI components for different field types
+ * 
+ * 4. QA Agent: Verifies extraction accuracy and completeness
+ *    - Identifies potentially missing required fields
+ *    - Checks for inconsistencies in the extracted data
+ *    - Provides confidence scores for the overall form processing
+ * 
+ * This approach ensures modularity, specialization, scalability, and robustness
+ * in the form processing pipeline.
+ */
+
 export default defineConfig({
   plugins: [
     react(),
@@ -15,6 +44,12 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, './src'),
+      // Agent-specific module paths
+      '@agents': resolve(__dirname, './src/lib/agents'),
+      '@parser': resolve(__dirname, './src/lib/agents/parser'),
+      '@builder': resolve(__dirname, './src/lib/agents/builder'),
+      '@designer': resolve(__dirname, './src/lib/agents/designer'),
+      '@qa': resolve(__dirname, './src/lib/agents/qa'),
     },
   },
   build: {
@@ -63,32 +98,46 @@ export default defineConfig({
           // Replace underscore prefix if present
           return sanitized.startsWith('_') ? `vite-${sanitized.slice(1)}` : sanitized;
         },
-        // Implement manual chunk splitting
+        // Implement manual chunk splitting with agent-specific chunks
         manualChunks: (id) => {
-          // Split PDF-related dependencies
+          // Agent-specific chunks
+          if (id.includes('/agents/parser/')) {
+            return 'agent-parser';
+          }
+          if (id.includes('/agents/builder/')) {
+            return 'agent-builder';
+          }
+          if (id.includes('/agents/designer/')) {
+            return 'agent-designer';
+          }
+          if (id.includes('/agents/qa/')) {
+            return 'agent-qa';
+          }
+          
+          // PDF-related dependencies
           if (id.includes('pdfjs-dist') || id.includes('pdf-lib')) {
             return 'pdf-dependencies';
           }
           
-          // Split React and related packages
+          // React and related packages
           if (id.includes('node_modules/react') || 
               id.includes('node_modules/react-dom')) {
             return 'react-vendor';
           }
           
-          // Split date-related libraries
+          // Date-related libraries
           if (id.includes('date-fns') || 
               id.includes('react-day-picker')) {
             return 'date-vendor';
           }
           
-          // Split UI components
+          // UI components
           if (id.includes('node_modules/@radix-ui') || 
               id.includes('lucide-react')) {
             return 'ui-vendor';
           }
           
-          // Split OpenAI related code
+          // OpenAI related code
           if (id.includes('node_modules/openai')) {
             return 'openai-vendor';
           }

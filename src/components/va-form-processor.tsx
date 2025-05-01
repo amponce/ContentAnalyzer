@@ -440,11 +440,6 @@ export function VAFormProcessorComponent() {
             {file && (
               <p className="text-sm text-muted-foreground">
                 Selected file: {file.name}
-                {isPDF(file) && (
-                  <span className="text-blue-600 ml-2">
-                    (PDF will be converted automatically)
-                  </span>
-                )}
               </p>
             )}
             <p className="text-xs text-muted-foreground">

@@ -1,73 +1,153 @@
-# Content Analyzer Chrome Extension
+# ContentAnalyzer Chrome Extension
 
-A powerful Chrome extension for analyzing content, processing government forms, and performing web searches.
+A Chrome extension for processing and analyzing government forms of any type. The extension extracts form data from PDFs, converts it to a structured digital format, and displays it in a user-friendly interface with modern UI components.
 
 ## Features
 
-### Document Processing
+- Extract form data from any PDF forms without hardcoded templates
+- Process multi-page PDF documents with consistent results
+- Display form data in a large, responsive viewer window
+- Support for complex nested objects and field types
+- Save, edit, print, and export form data
+- AI-powered field recognition and categorization
 
-The Content Analyzer can process various government forms from agencies like VA, IRS, SSA, DMV, and more:
+## Architecture
 
-- Upload PDF or image files of government forms
-- Automatically extract form fields, texts, and checkboxes
-- Process multi-page documents with merged results
-- View processed forms in a dedicated window with enhanced UI
-- Edit, save, print, and download processed form data
+The ContentAnalyzer implements a sophisticated multi-agent architecture for form processing, consisting of specialized agents that work together in a pipeline:
 
-### Form Viewer
+### Multi-Agent Form Processing Architecture
 
-The enhanced Form Viewer provides a larger, more functional interface for working with processed forms:
+1. **Parsing Agent**
+   - Specialized in OCR and text extraction from forms
+   - Understands document structure and layout
+   - Identifies form fields, labels, and values with high accuracy
+   - Processes multi-page documents and complex layouts
 
-- Responsive design that adapts to different window sizes
-- Search functionality to find specific fields
-- Zoom controls to adjust text size for better readability
-- Field categorization by section
-- Copy individual field values with one click
-- Print-optimized view with multi-column layout
-- Save and download functionality for processed forms
+2. **Builder Agent**
+   - Transforms raw extracted data into structured form objects
+   - Validates field values against expected formats
+   - Resolves ambiguities in field identification
+   - Groups related fields into logical sections
 
-### Additional Tools
+3. **Designer Agent**
+   - Creates user-friendly form layouts from structured data
+   - Implements multi-step navigation for complex forms
+   - Optimizes field arrangement for better usability
+   - Applies appropriate UI components for different field types
 
-- Sentiment analysis for text selection
-- Web search capabilities
+4. **QA Agent**
+   - Verifies extraction accuracy and completeness
+   - Identifies potentially missing required fields
+   - Checks for inconsistencies in the extracted data
+   - Provides confidence scores for the overall form processing
+
+This modular approach provides several benefits:
+- Each agent can be improved independently
+- Specialized AI models can be used for specific tasks
+- New form types can be supported without modifying the entire system
+- QA validation ensures accuracy and completeness
+
+## Usage
+
+### Processing Forms
+
+1. Click the ContentAnalyzer extension icon in Chrome
+2. Upload a PDF form document
+3. The extension will automatically:
+   - Process all pages in the document
+   - Extract form fields and their values
+   - Categorize fields into logical sections
+   - Present the form in a user-friendly layout
+
+### Form Viewer Features
+
+- **Search**: Find specific fields quickly with the search function
+- **Zoom Controls**: Adjust text size for better readability
+- **Edit Mode**: Make changes to extracted form data
+- **Print/Export**: Print or export the processed form
+- **Field Navigation**: Easily navigate between form sections
+
+### Working with Complex Fields
+
+The system handles various field types with specialized UI components:
+
+- **Text Fields**: Standard input fields for text
+- **Date Fields**: Calendar-based date pickers
+- **Checkboxes/Radios**: Toggle fields for boolean values
+- **Select Fields**: Dropdown menus for option selection
+- **Complex Objects**: Expandable objects with multiple properties
+- **Arrays**: List-based fields with add/remove functionality
+
+## Installation
+
+1. Clone the repository
+2. Install dependencies with `npm install`
+3. Build the extension with `npm run build`
+4. Load the extension in Chrome from the `dist` directory
 
 ## Development
 
-### Prerequisites
-
-- Node.js 18 or higher
-- npm or yarn
-
 ### Setup
 
-1. Clone the repository
-2. Install dependencies:
-   ```
-   npm install
-   ```
-3. Build the extension:
-   ```
-   npm run build
-   ```
-4. Load the unpacked extension from the `dist` folder in Chrome
+```bash
+npm install
+npm run dev
+```
 
-### Development Commands
+### Build
 
-- `npm run dev` - Start development server with hot reload
-- `npm run build` - Build production version
+```bash
+npm run build
+```
 
-## Technology Stack
+### Using the Multi-Agent System in Code
+
+To process forms programmatically:
+
+```typescript
+import { createFormProcessingPipeline } from './src/lib/agents';
+
+// Create the pipeline
+const pipeline = createFormProcessingPipeline();
+
+// Process a form with PDF pages
+const processForm = async (pdfPages) => {
+  const result = await pipeline.processForm(pdfPages, {
+    formNumber: 'FORM-1234', // Optional
+    formTitle: 'Sample Form', // Optional
+  });
+  
+  // Access the processed form data
+  console.log(result.formData);
+  
+  // Check processing confidence
+  console.log(`Confidence: ${result.confidence}`);
+  
+  // View any issues found during processing
+  console.log(result.issues);
+};
+
+// Or run a specific stage of the pipeline
+const runParserOnly = async (pdfPages) => {
+  const parserResult = await pipeline.runStage('parser', {
+    pages: pdfPages,
+    mode: 'detailed'
+  });
+  
+  console.log(parserResult);
+};
+```
+
+### Technologies
 
 - React
 - TypeScript
-- Tailwind CSS
 - Vite
-- OpenAI API for AI processing
-
-## Configuration
-
-The extension requires an OpenAI API key for form processing and sentiment analysis. Configure this in the extension settings after installation.
+- PDF.js
+- OpenAI API
+- Tailwind CSS
+- shadcn/ui components
 
 ## License
 
-MIT License 
+[MIT License](LICENSE) 
