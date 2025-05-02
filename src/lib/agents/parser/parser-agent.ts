@@ -1,6 +1,6 @@
 import { BaseAgent } from '../agent-interface';
 import { PDFPage } from '@/lib/pdf-processor';
-import { FormField } from '@/components/form-schema';
+import { FormField, FormSection } from '@/components/form-schema';
 
 /**
  * Input type for the parsing agent
@@ -30,6 +30,8 @@ export interface ParserOutput {
     pageCount: number;
     /** OCR confidence scores by page */
     ocrConfidenceByPage: number[];
+    /** Form sections if identified during parsing */
+    sections?: FormSection[];
   };
 }
 

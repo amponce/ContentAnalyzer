@@ -96,12 +96,18 @@ export class BuilderAgent extends BaseAgent<BuilderInput, BuilderOutput> {
         sections: [] // Will be populated below
       };
       
-      // Group fields into sections
-      const sections = this.groupFieldsIntoSections(formData.fields);
-      formData.sections = sections;
+      // Check if the parser provided sections - use those if available
+      if (input.parserOutput.metadata?.sections && input.parserOutput.metadata.sections.length > 0) {
+        console.log("Using original form sections from parser");
+        formData.sections = input.parserOutput.metadata.sections;
+      } else {
+        // Fall back to grouping fields into sections if parser didn't provide sections
+        console.log("Parser didn't provide sections, grouping fields");
+        formData.sections = this.groupFieldsIntoSections(formData.fields);
+      }
       
       // Count uncategorized fields (those in "Other Information" section)
-      const otherSection = sections.find(s => s.title === 'Other Information');
+      const otherSection = formData.sections.find(s => s.title === 'Other Information');
       const uncategorizedFields = otherSection ? otherSection.fields : [];
       
       // Set confidence based on categorization success

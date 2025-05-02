@@ -305,22 +305,61 @@ chrome.runtime.onMessage.addListener((request, _sender: chrome.runtime.MessageSe
   }
 });
 
+// Track connection state
+let isConnecting = false;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const INITIAL_RECONNECT_DELAY = 1000;
+const MAX_RECONNECT_DELAY = 32000;
+
 // Connect to the background page
 function connectToBackground() {
+  // Don't try to connect if already connecting or max attempts reached
+  if (isConnecting || reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    return null;
+  }
+
   try {
+    isConnecting = true;
     const port = chrome.runtime.connect({ name: "content-script" });
+    
+    // Reset reconnection state on successful connection
+    isConnecting = false;
+    reconnectAttempts = 0;
     
     // Set up reconnection logic if the connection fails
     port.onDisconnect.addListener(() => {
-      console.log('Disconnected from background. Attempting to reconnect...');
-      setTimeout(connectToBackground, 1000);
+      const error = chrome.runtime.lastError;
+      isConnecting = false;
+      
+      // Only attempt reconnection if:
+      // 1. We haven't exceeded max attempts
+      // 2. The extension is still active (no lastError indicating otherwise)
+      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && !error?.message?.includes('Extension context invalidated')) {
+        console.log(`Disconnected from background. Attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS}`);
+        
+        // Calculate delay with exponential backoff
+        const delay = Math.min(INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
+        reconnectAttempts++;
+        
+        setTimeout(connectToBackground, delay);
+      } else {
+        console.log('Maximum reconnection attempts reached or extension inactive. Stopping reconnection attempts.');
+      }
     });
     
     console.log('Content script connected to background');
     return port;
   } catch (error) {
     console.error('Failed to connect to background:', error);
-    setTimeout(connectToBackground, 1000);
+    isConnecting = false;
+    
+    // Only retry if we haven't exceeded max attempts
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      const delay = Math.min(INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
+      reconnectAttempts++;
+      setTimeout(connectToBackground, delay);
+    }
     return null;
   }
 }
