@@ -5,60 +5,52 @@
  * It includes specialized agents for each stage of the process, working in a pipeline.
  */
 
-// Base agent types
-export { type Agent, BaseAgent } from './agent-interface';
+// Export agent interfaces
+export * from './agent-interface';
 
-// Parser agent for OCR and text extraction
-export { 
-  ParserAgent,
-  type ParserInput,
-  type ParserOutput 
-} from './parser/parser-agent';
+// Export individual agents
+export * from './parser/parser-agent';
+export * from './builder/builder-agent';
+export * from './designer/designer-agent';
+export * from './qa/qa-agent';
+export * from './survey-analyzer';
+export * from './content-analyzer';
 
-// Builder agent for transforming raw data into structured form objects
-export { 
-  BuilderAgent,
-  type BuilderInput,
-  type BuilderOutput 
-} from './builder/builder-agent';
-
-// Designer agent for optimizing UI layout
-export { 
-  DesignerAgent,
-  type DesignerInput,
-  type DesignerOutput 
-} from './designer/designer-agent';
-
-// QA agent for verifying data accuracy
-export { 
-  QAAgent,
-  type QAInput,
-  type QAOutput,
-  IssueSeverity,
-  type QAIssue
-} from './qa/qa-agent';
-
+// Import all agents
 import { ParserAgent } from './parser/parser-agent';
 import { BuilderAgent } from './builder/builder-agent';
 import { DesignerAgent } from './designer/designer-agent';
-import { QAAgent, QAIssue } from './qa/qa-agent';
+import { QAAgent } from './qa/qa-agent';
+import { SurveyAnalyzerAgent } from './survey-analyzer';
+import { ContentAnalyzerAgent } from './content-analyzer';
 
 /**
- * Results from the complete form processing pipeline
+ * Result type for form processing pipeline
  */
 export interface FormProcessingResult {
-  /** Final form data with all enhancements and validations */
+  /**
+   * Final form data with validated fields
+   */
   formData: any;
-  /** Metadata from each processing stage */
+  
+  /**
+   * Metadata from each stage of processing
+   */
   metadata: {
     parsing: any;
     building: any;
     design: any;
     qa: any;
   };
-  /** Issues found during processing */
-  issues: QAIssue[];
-  /** Overall confidence score */
+  
+  /**
+   * Any issues identified during processing
+   */
+  issues: Array<any>;
+  
+  /**
+   * Overall confidence in the result
+   */
   confidence: number;
 }
 
@@ -172,4 +164,20 @@ export function createFormProcessingPipeline() {
       }
     }
   };
+}
+
+/**
+ * Create an instance of the survey analyzer agent for Medallia reports
+ * @returns Survey analyzer agent
+ */
+export function createSurveyAnalyzer() {
+  return new SurveyAnalyzerAgent();
+}
+
+/**
+ * Create an instance of the content analyzer agent for general content analysis
+ * @returns Content analyzer agent
+ */
+export function createContentAnalyzer() {
+  return new ContentAnalyzerAgent();
 } 

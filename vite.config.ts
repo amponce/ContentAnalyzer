@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { crx } from '@crxjs/vite-plugin';
 import manifest from './manifest.json';
 import { resolve } from 'path';
+import { copyFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'fs';
 
 // Note: PDF worker is now copied to the public/ directory
 // and will be automatically included in the build
@@ -36,10 +37,77 @@ import { resolve } from 'path';
  * in the form processing pipeline.
  */
 
+// Prepare icons before build
+function prepareIcons() {
+  try {
+    // Copy icons to public root for manifest processing during build
+    const iconSizes = [16, 48, 128];
+    iconSizes.forEach(size => {
+      const source = `./public/icons/icon${size}.png`;
+      const destination = `./public/icon${size}.png`;
+      try {
+        const data = readFileSync(source);
+        writeFileSync(destination, data);
+        console.log(`Prepared: Copied ${source} to ${destination}`);
+      } catch (error) {
+        console.error(`Error preparing icon${size}.png:`, error);
+      }
+    });
+    return true;
+  } catch (error) {
+    console.error('Error preparing icons:', error);
+    return false;
+  }
+}
+
+// Copy files after build
+function copyIconsPostBuild() {
+  try {
+    // Make sure dist directory exists
+    if (!existsSync('./dist')) {
+      mkdirSync('./dist', { recursive: true });
+    }
+    
+    // Copy icons to dist root for Chrome to find
+    const iconSizes = [16, 48, 128];
+    iconSizes.forEach(size => {
+      const source = `./public/icons/icon${size}.png`;
+      const destination = `./dist/icon${size}.png`;
+      try {
+        const data = readFileSync(source);
+        writeFileSync(destination, data);
+        console.log(`Post-build: Copied ${source} to ${destination}`);
+      } catch (error) {
+        console.error(`Error copying icon${size}.png:`, error);
+      }
+    });
+    return true;
+  } catch (error) {
+    console.error('Error copying icons:', error);
+    return false;
+  }
+}
+
+// Prepare icons before configuration
+prepareIcons();
+
 export default defineConfig({
   plugins: [
+    {
+      name: 'pre-build-setup',
+      buildStart() {
+        // Run icon preparation again in case it was missed
+        prepareIcons();
+      }
+    },
     react(),
     crx({ manifest }),
+    {
+      name: 'post-build-setup',
+      closeBundle() {
+        copyIconsPostBuild();
+      }
+    }
   ],
   resolve: {
     alias: {
@@ -149,5 +217,6 @@ export default defineConfig({
         }
       }
     }
-  }
+  },
+  publicDir: 'public'
 }); 

@@ -20,8 +20,8 @@ import ReactMarkdown from 'react-markdown';
 // Import global styles
 import '@/styles/globals.css';
 
-// Import logo
-import logo from '../../icons/agilesix_logo.jpg';
+// Use a relative path that we'll update during build through the public directory
+const logoPath = 'icons/agilesix_logo.jpg';
 
 interface AnalysisResult {
   sentiment: string;
@@ -675,7 +675,7 @@ function Popup() {
             <BarChart className="h-5 w-5 text-blue-200" />
             <h1 className="font-semibold text-lg ml-2 tracking-wide">Content Analyzer</h1>
           </div>
-          <img src={logo} alt="Content Analyzer Logo" className="h-8 w-8" />
+          <img src={logoPath} alt="Content Analyzer Logo" className="h-8 w-8" />
         </div>
         <div className="text-blue-200 text-xs mt-1 font-medium tracking-wide">
           Analyze sentiment and feedback from any page
